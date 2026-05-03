@@ -2,10 +2,19 @@ package tools
 
 import (
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"strings"
 )
+
+var mariadbClientVersions = []MariadbClientVersion{
+	MariadbClientLegacy,
+	MariadbClientModern,
+}
+
+var mariadbRequired = []string{
+	string(MariadbExecutableMariadbDump),
+	string(MariadbExecutableMariadb),
+}
 
 type MariadbVersion string
 
@@ -73,19 +82,24 @@ func getMariadbBinDir(clientVersion MariadbClientVersion) string {
 	)
 }
 
-// VerifyMariadbInstallation is non-fatal — MariaDB support is optional.
-func VerifyMariadbInstallation(logger *slog.Logger, isShowLogs bool) {
-	clientVersions := []MariadbClientVersion{MariadbClientLegacy, MariadbClientModern}
+// checkMariadb verifies the legacy and modern MariaDB client bundles.
+// Non-fatal — missing bundles disable that client tier.
+func checkMariadb() []ToolCheckResult {
+	results := make([]ToolCheckResult, 0, len(mariadbClientVersions))
 
-	required := []string{
-		string(MariadbExecutableMariadbDump),
-		string(MariadbExecutableMariadb),
+	for _, cv := range mariadbClientVersions {
+		binDir := getMariadbBinDir(cv)
+
+		results = append(results, ToolCheckResult{
+			Db:      "mariadb",
+			Version: string(cv),
+			BinDir:  binDir,
+			Errors:  checkBinDir(binDir, mariadbRequired),
+			IsFatal: false,
+		})
 	}
 
-	for _, cv := range clientVersions {
-		verifyBinDir(logger, "mariadb", string(cv), getMariadbBinDir(cv),
-			required, false, isShowLogs)
-	}
+	return results
 }
 
 // IsMariadbBackupVersionHigherThanRestoreVersion reports whether a backup

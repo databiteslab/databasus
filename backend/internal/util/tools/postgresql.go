@@ -2,11 +2,25 @@ package tools
 
 import (
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"runtime"
 	"strings"
 )
+
+var postgresqlVersions = []PostgresqlVersion{
+	PostgresqlVersion12,
+	PostgresqlVersion13,
+	PostgresqlVersion14,
+	PostgresqlVersion15,
+	PostgresqlVersion16,
+	PostgresqlVersion17,
+	PostgresqlVersion18,
+}
+
+var postgresqlRequired = []string{
+	string(PostgresqlExecutablePgDump),
+	string(PostgresqlExecutablePsql),
+}
 
 // GetPostgresqlExecutable returns the absolute path to a PostgreSQL client
 // binary for the given version (e.g. pg_dump, pg_restore, psql).
@@ -34,28 +48,25 @@ func getPostgresqlBinDir(version PostgresqlVersion) string {
 	)
 }
 
-// VerifyPostgresqlInstallation is fatal — the app needs every PG version
-// because we read the version from each managed database.
-func VerifyPostgresqlInstallation(logger *slog.Logger, isShowLogs bool) {
-	versions := []PostgresqlVersion{
-		PostgresqlVersion12,
-		PostgresqlVersion13,
-		PostgresqlVersion14,
-		PostgresqlVersion15,
-		PostgresqlVersion16,
-		PostgresqlVersion17,
-		PostgresqlVersion18,
+// checkPostgresql verifies every supported PG version's bin directory. PG is
+// fatal-tier — the app reads the version from each managed database and must
+// be able to invoke the matching client.
+func checkPostgresql() []ToolCheckResult {
+	results := make([]ToolCheckResult, 0, len(postgresqlVersions))
+
+	for _, v := range postgresqlVersions {
+		binDir := getPostgresqlBinDir(v)
+
+		results = append(results, ToolCheckResult{
+			Db:      "postgresql",
+			Version: string(v),
+			BinDir:  binDir,
+			Errors:  checkBinDir(binDir, postgresqlRequired),
+			IsFatal: true,
+		})
 	}
 
-	required := []string{
-		string(PostgresqlExecutablePgDump),
-		string(PostgresqlExecutablePsql),
-	}
-
-	for _, v := range versions {
-		verifyBinDir(logger, "postgresql", string(v), getPostgresqlBinDir(v),
-			required, true, isShowLogs)
-	}
+	return results
 }
 
 // EscapePgpassField escapes special characters for the .pgpass file format.

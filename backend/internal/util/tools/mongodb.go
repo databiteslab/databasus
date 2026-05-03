@@ -2,10 +2,14 @@ package tools
 
 import (
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"regexp"
 )
+
+var mongodbRequired = []string{
+	string(MongodbExecutableMongodump),
+	string(MongodbExecutableMongorestore),
+}
 
 type MongodbVersion string
 
@@ -35,15 +39,18 @@ func getMongodbBinDir() string {
 	return filepath.Join(AssetsToolsDir(), "mongodb", "bin")
 }
 
-// VerifyMongodbInstallation is non-fatal — MongoDB support is optional.
-func VerifyMongodbInstallation(logger *slog.Logger, isShowLogs bool) {
-	required := []string{
-		string(MongodbExecutableMongodump),
-		string(MongodbExecutableMongorestore),
-	}
+// checkMongodb verifies the unified MongoDB Database Tools bundle. Non-fatal
+// — a missing bundle disables MongoDB support.
+func checkMongodb() []ToolCheckResult {
+	binDir := getMongodbBinDir()
 
-	verifyBinDir(logger, "mongodb", "tools", getMongodbBinDir(),
-		required, false, isShowLogs)
+	return []ToolCheckResult{{
+		Db:      "mongodb",
+		Version: "tools",
+		BinDir:  binDir,
+		Errors:  checkBinDir(binDir, mongodbRequired),
+		IsFatal: false,
+	}}
 }
 
 // IsMongodbBackupVersionHigherThanRestoreVersion reports whether a backup

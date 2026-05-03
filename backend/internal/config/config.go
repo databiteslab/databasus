@@ -223,7 +223,7 @@ func loadEnvVariables() {
 	}
 	log.Info("ENV_MODE loaded", "mode", env.EnvMode)
 
-	tools.VerifyAllClientTools(log, env.ShowDbInstallationVerificationLogs)
+	tools.LogAndExitIfClientToolsBroken(log, env.ShowDbInstallationVerificationLogs)
 
 	if env.NodeNetworkThroughputMBs == 0 {
 		env.NodeNetworkThroughputMBs = 125 // 1 Gbit/s

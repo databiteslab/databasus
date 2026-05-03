@@ -2,10 +2,21 @@ package tools
 
 import (
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"strings"
 )
+
+var mysqlVersions = []MysqlVersion{
+	MysqlVersion57,
+	MysqlVersion80,
+	MysqlVersion84,
+	MysqlVersion9,
+}
+
+var mysqlRequired = []string{
+	string(MysqlExecutableMysqldump),
+	string(MysqlExecutableMysql),
+}
 
 type MysqlVersion string
 
@@ -38,25 +49,24 @@ func getMysqlBinDir(version MysqlVersion) string {
 	)
 }
 
-// VerifyMysqlInstallation is non-fatal — MySQL support is optional, so a
-// missing version warns rather than exiting.
-func VerifyMysqlInstallation(logger *slog.Logger, isShowLogs bool) {
-	versions := []MysqlVersion{
-		MysqlVersion57,
-		MysqlVersion80,
-		MysqlVersion84,
-		MysqlVersion9,
+// checkMysql verifies every supported MySQL version's bin directory. MySQL
+// is non-fatal — a missing bundle disables that version's support.
+func checkMysql() []ToolCheckResult {
+	results := make([]ToolCheckResult, 0, len(mysqlVersions))
+
+	for _, v := range mysqlVersions {
+		binDir := getMysqlBinDir(v)
+
+		results = append(results, ToolCheckResult{
+			Db:      "mysql",
+			Version: string(v),
+			BinDir:  binDir,
+			Errors:  checkBinDir(binDir, mysqlRequired),
+			IsFatal: false,
+		})
 	}
 
-	required := []string{
-		string(MysqlExecutableMysqldump),
-		string(MysqlExecutableMysql),
-	}
-
-	for _, v := range versions {
-		verifyBinDir(logger, "mysql", string(v), getMysqlBinDir(v),
-			required, false, isShowLogs)
-	}
+	return results
 }
 
 // IsMysqlBackupVersionHigherThanRestoreVersion reports whether a backup
