@@ -8,7 +8,6 @@ node_modules
 **/node_modules
 
 # Backend - exclude everything except what's needed for build
-backend/tools
 backend/mysqldata
 backend/pgdata
 backend/mariadbdata
@@ -63,7 +62,6 @@ CITATION.cff
 
 # Assets - exclude SVGs but keep tools
 assets/*.svg
-assets/tools/download_postgresql.sh
 
 # Python cache
 **/__pycache__

@@ -122,39 +122,26 @@ RUN apt-get install -y --no-install-recommends \
   wget ca-certificates gnupg lsb-release sudo gosu curl unzip xz-utils libncurses5 libncurses6
 RUN rm -rf /var/lib/apt/lists/*
 
-# ========= Install PostgreSQL client binaries (versions 12-18) =========
-# Pre-downloaded binaries from assets/tools/ - no network download needed
+# ========= Pre-built DB client binaries (PG, MySQL, MariaDB, MongoDB) =========
+# All client tools live under /app/assets/tools/<arch>/ — the backend resolves
+# them at runtime via runtime.GOARCH. We copy only the tree matching $TARGETARCH.
 ARG TARGETARCH
-RUN mkdir -p /usr/lib/postgresql/12/bin /usr/lib/postgresql/13/bin \
-  /usr/lib/postgresql/14/bin /usr/lib/postgresql/15/bin \
-  /usr/lib/postgresql/16/bin /usr/lib/postgresql/17/bin \
-  /usr/lib/postgresql/18/bin
-
-# Copy pre-downloaded PostgreSQL binaries based on architecture
-COPY assets/tools/x64/postgresql/ /tmp/pg-x64/
-COPY assets/tools/arm/postgresql/ /tmp/pg-arm/
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-  cp -r /tmp/pg-x64/postgresql-12/bin/* /usr/lib/postgresql/12/bin/ && \
-  cp -r /tmp/pg-x64/postgresql-13/bin/* /usr/lib/postgresql/13/bin/ && \
-  cp -r /tmp/pg-x64/postgresql-14/bin/* /usr/lib/postgresql/14/bin/ && \
-  cp -r /tmp/pg-x64/postgresql-15/bin/* /usr/lib/postgresql/15/bin/ && \
-  cp -r /tmp/pg-x64/postgresql-16/bin/* /usr/lib/postgresql/16/bin/ && \
-  cp -r /tmp/pg-x64/postgresql-17/bin/* /usr/lib/postgresql/17/bin/ && \
-  cp -r /tmp/pg-x64/postgresql-18/bin/* /usr/lib/postgresql/18/bin/; \
+COPY assets/tools/x64/ /tmp/tools-x64/
+COPY assets/tools/arm/ /tmp/tools-arm/
+RUN mkdir -p /app/assets/tools && \
+  if [ "$TARGETARCH" = "amd64" ]; then \
+    mv /tmp/tools-x64 /app/assets/tools/x64; \
   elif [ "$TARGETARCH" = "arm64" ]; then \
-  cp -r /tmp/pg-arm/postgresql-12/bin/* /usr/lib/postgresql/12/bin/ && \
-  cp -r /tmp/pg-arm/postgresql-13/bin/* /usr/lib/postgresql/13/bin/ && \
-  cp -r /tmp/pg-arm/postgresql-14/bin/* /usr/lib/postgresql/14/bin/ && \
-  cp -r /tmp/pg-arm/postgresql-15/bin/* /usr/lib/postgresql/15/bin/ && \
-  cp -r /tmp/pg-arm/postgresql-16/bin/* /usr/lib/postgresql/16/bin/ && \
-  cp -r /tmp/pg-arm/postgresql-17/bin/* /usr/lib/postgresql/17/bin/ && \
-  cp -r /tmp/pg-arm/postgresql-18/bin/* /usr/lib/postgresql/18/bin/; \
+    mv /tmp/tools-arm /app/assets/tools/arm; \
   fi && \
-  rm -rf /tmp/pg-x64 /tmp/pg-arm && \
-  chmod +x /usr/lib/postgresql/*/bin/*
+  rm -rf /tmp/tools-x64 /tmp/tools-arm && \
+  chmod +x /app/assets/tools/*/postgresql/*/bin/* \
+           /app/assets/tools/*/mysql/*/bin/* \
+           /app/assets/tools/*/mariadb/*/bin/* \
+           /app/assets/tools/*/mongodb/bin/*
 
-# Install PostgreSQL 17 server (needed for internal database)
-# Add PostgreSQL repository for server installation only
+# Install PostgreSQL 17 server (needed for the internal database — not for
+# clients, those come from assets above).
 RUN wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - && \
   echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
   > /etc/apt/sources.list.d/pgdg.list && \
@@ -175,68 +162,6 @@ RUN wget -O /usr/share/keyrings/greensec.github.io-valkey-debian.key https://gre
 RUN apt-get update && \
   apt-get install -y --no-install-recommends rclone && \
   rm -rf /var/lib/apt/lists/*
-
-# Create directories for all database clients
-RUN mkdir -p /usr/local/mysql-5.7/bin /usr/local/mysql-8.0/bin /usr/local/mysql-8.4/bin \
-  /usr/local/mysql-9/bin \
-  /usr/local/mariadb-10.6/bin /usr/local/mariadb-12.1/bin \
-  /usr/local/mongodb-database-tools/bin
-
-# ========= Install MySQL clients (5.7, 8.0, 8.4, 9) =========
-# Pre-downloaded binaries from assets/tools/ - no network download needed
-# Note: MySQL 5.7 is only available for x86_64
-# Note: MySQL binaries require libncurses5 for terminal handling
-COPY assets/tools/x64/mysql/ /tmp/mysql-x64/
-COPY assets/tools/arm/mysql/ /tmp/mysql-arm/
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-  cp /tmp/mysql-x64/mysql-5.7/bin/* /usr/local/mysql-5.7/bin/ && \
-  cp /tmp/mysql-x64/mysql-8.0/bin/* /usr/local/mysql-8.0/bin/ && \
-  cp /tmp/mysql-x64/mysql-8.4/bin/* /usr/local/mysql-8.4/bin/ && \
-  cp /tmp/mysql-x64/mysql-9/bin/* /usr/local/mysql-9/bin/; \
-  elif [ "$TARGETARCH" = "arm64" ]; then \
-  echo "MySQL 5.7 not available for arm64, skipping..." && \
-  cp /tmp/mysql-arm/mysql-8.0/bin/* /usr/local/mysql-8.0/bin/ && \
-  cp /tmp/mysql-arm/mysql-8.4/bin/* /usr/local/mysql-8.4/bin/ && \
-  cp /tmp/mysql-arm/mysql-9/bin/* /usr/local/mysql-9/bin/; \
-  fi && \
-  rm -rf /tmp/mysql-x64 /tmp/mysql-arm && \
-  chmod +x /usr/local/mysql-*/bin/*
-
-# ========= Install MariaDB clients (10.6, 12.1) =========
-# Pre-downloaded binaries from assets/tools/ - no network download needed
-# 10.6 (legacy): For older servers (5.5, 10.1) that don't have generation_expression column
-# 12.1 (modern): For newer servers (10.2+)
-COPY assets/tools/x64/mariadb/ /tmp/mariadb-x64/
-COPY assets/tools/arm/mariadb/ /tmp/mariadb-arm/
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-  cp /tmp/mariadb-x64/mariadb-10.6/bin/* /usr/local/mariadb-10.6/bin/ && \
-  cp /tmp/mariadb-x64/mariadb-12.1/bin/* /usr/local/mariadb-12.1/bin/; \
-  elif [ "$TARGETARCH" = "arm64" ]; then \
-  cp /tmp/mariadb-arm/mariadb-10.6/bin/* /usr/local/mariadb-10.6/bin/ && \
-  cp /tmp/mariadb-arm/mariadb-12.1/bin/* /usr/local/mariadb-12.1/bin/; \
-  fi && \
-  rm -rf /tmp/mariadb-x64 /tmp/mariadb-arm && \
-  chmod +x /usr/local/mariadb-*/bin/*
-
-# ========= Install MongoDB Database Tools =========
-# Note: MongoDB Database Tools are backward compatible - single version supports all server versions (4.0-8.0)
-# Note: For ARM64, we use Ubuntu 22.04 package as MongoDB doesn't provide Debian 12 ARM64 packages
-RUN apt-get update && \
-  if [ "$TARGETARCH" = "amd64" ]; then \
-  wget -q https://fastdl.mongodb.org/tools/db/mongodb-database-tools-debian12-x86_64-100.10.0.deb -O /tmp/mongodb-database-tools.deb; \
-  elif [ "$TARGETARCH" = "arm64" ]; then \
-  wget -q https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-arm64-100.10.0.deb -O /tmp/mongodb-database-tools.deb; \
-  fi && \
-  dpkg -i /tmp/mongodb-database-tools.deb || apt-get install -f -y --no-install-recommends && \
-  rm -f /tmp/mongodb-database-tools.deb && \
-  rm -rf /var/lib/apt/lists/* && \
-  mkdir -p /usr/local/mongodb-database-tools/bin && \
-  if [ -f /usr/bin/mongodump ]; then \
-  ln -sf /usr/bin/mongodump /usr/local/mongodb-database-tools/bin/mongodump; \
-  fi && \
-  if [ -f /usr/bin/mongorestore ]; then \
-  ln -sf /usr/bin/mongorestore /usr/local/mongodb-database-tools/bin/mongorestore; \
-  fi
 
 # Create postgres user and set up directories
 RUN groupadd -g 999 postgres || true && \

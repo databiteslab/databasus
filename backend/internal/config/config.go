@@ -23,12 +23,8 @@ const (
 )
 
 type EnvVariables struct {
-	IsTesting            bool
-	EnvMode              env_utils.EnvMode `env:"ENV_MODE"             required:"true"`
-	PostgresesInstallDir string            `env:"POSTGRES_INSTALL_DIR"`
-	MysqlInstallDir      string            `env:"MYSQL_INSTALL_DIR"`
-	MariadbInstallDir    string            `env:"MARIADB_INSTALL_DIR"`
-	MongodbInstallDir    string            `env:"MONGODB_INSTALL_DIR"`
+	IsTesting bool
+	EnvMode   env_utils.EnvMode `env:"ENV_MODE" required:"true"`
 
 	// Internal database
 	DatabaseDsn string `env:"DATABASE_DSN" required:"true"`
@@ -218,37 +214,7 @@ func loadEnvVariables() {
 	}
 	log.Info("ENV_MODE loaded", "mode", env.EnvMode)
 
-	env.PostgresesInstallDir = filepath.Join(backendRoot, "tools", "postgresql")
-	tools.VerifyPostgresesInstallation(
-		log,
-		env.EnvMode,
-		env.PostgresesInstallDir,
-		env.ShowDbInstallationVerificationLogs,
-	)
-
-	env.MysqlInstallDir = filepath.Join(backendRoot, "tools", "mysql")
-	tools.VerifyMysqlInstallation(
-		log,
-		env.EnvMode,
-		env.MysqlInstallDir,
-		env.ShowDbInstallationVerificationLogs,
-	)
-
-	env.MariadbInstallDir = filepath.Join(backendRoot, "tools", "mariadb")
-	tools.VerifyMariadbInstallation(
-		log,
-		env.EnvMode,
-		env.MariadbInstallDir,
-		env.ShowDbInstallationVerificationLogs,
-	)
-
-	env.MongodbInstallDir = filepath.Join(backendRoot, "tools", "mongodb")
-	tools.VerifyMongodbInstallation(
-		log,
-		env.EnvMode,
-		env.MongodbInstallDir,
-		env.ShowDbInstallationVerificationLogs,
-	)
+	tools.VerifyAllClientTools(log, env.ShowDbInstallationVerificationLogs)
 
 	if env.NodeNetworkThroughputMBs == 0 {
 		env.NodeNetworkThroughputMBs = 125 // 1 Gbit/s
