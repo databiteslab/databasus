@@ -855,6 +855,72 @@ func Test_GetRawDbSizeMb_Mysql_ReturnsPositiveSize(t *testing.T) {
 	assert.Greater(t, sizeMB, 0.0, "raw db size should be > 0 after inserting data")
 }
 
+func Test_ParseGrantPrivileges_ReturnsExpectedTokens(t *testing.T) {
+	cases := []struct {
+		name  string
+		grant string
+		want  []string
+	}{
+		{
+			"issue-568 SHOW CREATE ROUTINE not split into CREATE",
+			"GRANT SELECT, SHOW VIEW, SHOW CREATE ROUTINE ON *.* TO 'backup'@'%'",
+			[]string{"SELECT", "SHOW VIEW", "SHOW CREATE ROUTINE"},
+		},
+		{
+			"standard write privs",
+			"GRANT SELECT, INSERT, UPDATE ON *.* TO 'x'@'%'",
+			[]string{"SELECT", "INSERT", "UPDATE"},
+		},
+		{
+			"ALL PRIVILEGES",
+			"GRANT ALL PRIVILEGES ON db.* TO 'x'@'%'",
+			[]string{"ALL PRIVILEGES"},
+		},
+		{
+			"USAGE-only line",
+			"GRANT USAGE ON *.* TO 'x'@'%'",
+			[]string{"USAGE"},
+		},
+		{
+			"column-level qualifiers stripped",
+			"GRANT SELECT (col1, col2), UPDATE (col3) ON db.t TO 'x'@'%'",
+			[]string{"SELECT", "UPDATE"},
+		},
+		{
+			"role grant (no ON clause) returns nil",
+			"GRANT my_role TO 'u'@'%'",
+			nil,
+		},
+		{
+			"PROXY grant",
+			"GRANT PROXY ON 'other'@'%' TO 'u'@'%'",
+			[]string{"PROXY"},
+		},
+		{
+			"WITH GRANT OPTION trailer ignored",
+			"GRANT SELECT, INSERT ON *.* TO 'x'@'%' WITH GRANT OPTION",
+			[]string{"SELECT", "INSERT"},
+		},
+		{
+			"mixed case GRANT/ON",
+			"grant Select, Update on *.* to 'x'@'%'",
+			[]string{"SELECT", "UPDATE"},
+		},
+		{
+			"column literally named ON inside parens",
+			"GRANT SELECT (on) ON db.t TO 'x'@'%'",
+			[]string{"SELECT"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseGrantPrivileges(tc.grant)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func connectToMysqlContainer(
 	t *testing.T,
 	port string,

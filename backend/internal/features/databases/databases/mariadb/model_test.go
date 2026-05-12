@@ -846,6 +846,148 @@ func Test_GetRawDbSizeMb_Mariadb_ReturnsPositiveSize(t *testing.T) {
 	assert.Greater(t, sizeMB, 0.0, "raw db size should be > 0 after inserting data")
 }
 
+// Regression test for issue #568: a user with only SELECT, SHOW VIEW, and
+// SHOW CREATE ROUTINE must be detected as read-only. Previously the
+// substring-regex check falsely matched "CREATE" and "CREATE ROUTINE" inside
+// "SHOW CREATE ROUTINE".
+//
+// SHOW CREATE ROUTINE was introduced as a distinct privilege in MariaDB
+// 11.3; the matrix below only covers versions that recognize the GRANT
+// statement.
+func Test_IsUserReadOnly_WithShowCreateRoutineGrant_ReturnsTrue(t *testing.T) {
+	env := config.GetEnv()
+	cases := []struct {
+		name    string
+		version tools.MariadbVersion
+		port    string
+	}{
+		{"MariaDB 11.4", tools.MariadbVersion114, env.TestMariadb114Port},
+		{"MariaDB 11.8", tools.MariadbVersion118, env.TestMariadb118Port},
+		{"MariaDB 12.0", tools.MariadbVersion120, env.TestMariadb120Port},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			container := connectToMariadbContainer(t, tc.port, tc.version)
+			defer container.DB.Close()
+
+			username := fmt.Sprintf("ro_%s", uuid.New().String()[:8])
+			password := "ropass123"
+
+			_, err := container.DB.Exec(fmt.Sprintf(
+				"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'", username, password))
+			assert.NoError(t, err)
+			defer dropUserSafe(container.DB, username)
+
+			for _, stmt := range []string{
+				"GRANT SELECT ON *.* TO '%s'@'%%'",
+				"GRANT SHOW VIEW ON *.* TO '%s'@'%%'",
+				"GRANT SHOW CREATE ROUTINE ON *.* TO '%s'@'%%'",
+			} {
+				_, err = container.DB.Exec(fmt.Sprintf(stmt, username))
+				assert.NoError(t, err)
+			}
+
+			_, err = container.DB.Exec("FLUSH PRIVILEGES")
+			assert.NoError(t, err)
+
+			readOnlyModel := &MariadbDatabase{
+				Version:  tc.version,
+				Host:     container.Host,
+				Port:     container.Port,
+				Username: username,
+				Password: password,
+				Database: &container.Database,
+				IsHttps:  false,
+			}
+
+			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+			isReadOnly, privileges, err := readOnlyModel.IsUserReadOnly(
+				t.Context(),
+				logger,
+				nil,
+			)
+			assert.NoError(t, err)
+			assert.True(
+				t,
+				isReadOnly,
+				"SELECT + SHOW VIEW + SHOW CREATE ROUTINE must be read-only, got privileges=%v",
+				privileges,
+			)
+			assert.Empty(t, privileges)
+		})
+	}
+}
+
+func Test_ParseGrantPrivileges_ReturnsExpectedTokens(t *testing.T) {
+	cases := []struct {
+		name  string
+		grant string
+		want  []string
+	}{
+		{
+			"issue-568 SHOW CREATE ROUTINE not split into CREATE",
+			"GRANT SELECT, SHOW VIEW, SHOW CREATE ROUTINE ON *.* TO 'backup'@'%'",
+			[]string{"SELECT", "SHOW VIEW", "SHOW CREATE ROUTINE"},
+		},
+		{
+			"standard write privs",
+			"GRANT SELECT, INSERT, UPDATE ON *.* TO 'x'@'%'",
+			[]string{"SELECT", "INSERT", "UPDATE"},
+		},
+		{
+			"ALL PRIVILEGES",
+			"GRANT ALL PRIVILEGES ON db.* TO 'x'@'%'",
+			[]string{"ALL PRIVILEGES"},
+		},
+		{
+			"USAGE-only line",
+			"GRANT USAGE ON *.* TO 'x'@'%'",
+			[]string{"USAGE"},
+		},
+		{
+			"column-level qualifiers stripped",
+			"GRANT SELECT (col1, col2), UPDATE (col3) ON db.t TO 'x'@'%'",
+			[]string{"SELECT", "UPDATE"},
+		},
+		{
+			"role grant (no ON clause) returns nil",
+			"GRANT my_role TO 'u'@'%'",
+			nil,
+		},
+		{
+			"PROXY grant",
+			"GRANT PROXY ON 'other'@'%' TO 'u'@'%'",
+			[]string{"PROXY"},
+		},
+		{
+			"WITH GRANT OPTION trailer ignored",
+			"GRANT SELECT, INSERT ON *.* TO 'x'@'%' WITH GRANT OPTION",
+			[]string{"SELECT", "INSERT"},
+		},
+		{
+			"mixed case GRANT/ON",
+			"grant Select, Update on *.* to 'x'@'%'",
+			[]string{"SELECT", "UPDATE"},
+		},
+		{
+			"column literally named ON inside parens",
+			"GRANT SELECT (on) ON db.t TO 'x'@'%'",
+			[]string{"SELECT"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseGrantPrivileges(tc.grant)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func connectToMariadbContainer(
 	t *testing.T,
 	port string,
