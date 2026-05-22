@@ -35,19 +35,19 @@ func Test_DoesVerificationFit_AcrossScenarios_RespectsAgentBudget(t *testing.T) 
 			capacity:       AgentCapacity{MaxDiskGb: 10},
 			runningBackups: nil,
 			// archive + restored + per-job gap = 10240 (full 10 GB budget)
-			candidate: backupWithSize(4000, 5216),
+			candidate: backupWithSize(4000, 1120),
 			wantFits:  true,
 		},
 		{
 			name:           "empty agent rejects candidate one MB over budget",
 			capacity:       AgentCapacity{MaxDiskGb: 10},
 			runningBackups: nil,
-			candidate:      backupWithSize(4000, 5217),
+			candidate:      backupWithSize(4000, 1121),
 			wantFits:       false,
 		},
 		{
 			name:     "one running, room for another small",
-			capacity: AgentCapacity{MaxDiskGb: 10},
+			capacity: AgentCapacity{MaxDiskGb: 12},
 			runningBackups: []*backups_core.Backup{
 				backupWithSize(50, 200),
 			},
@@ -64,8 +64,8 @@ func Test_DoesVerificationFit_AcrossScenarios_RespectsAgentBudget(t *testing.T) 
 			wantFits:  false,
 		},
 		{
-			name:     "three concurrent small jobs fit in 20 GB",
-			capacity: AgentCapacity{MaxDiskGb: 20},
+			name:     "three concurrent small jobs fit in 25 GB",
+			capacity: AgentCapacity{MaxDiskGb: 25},
 			runningBackups: []*backups_core.Backup{
 				backupWithSize(100, 500),
 				backupWithSize(100, 500),

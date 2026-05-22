@@ -7,9 +7,12 @@ import (
 )
 
 // diskCostPerJobGapMb is the per-job safe gap added on top of the downloaded
-// backup file and the restored database. Covers WAL, indexes, sort/temp spills,
-// FS slack and small fixed costs that don't scale with backup size.
-const diskCostPerJobGapMb = 1024
+// backup file and the restored database. The restore's peak on-disk footprint
+// exceeds backup + final DB size: pg_restore writes WAL into pg_wal (inside
+// PGDATA, counted by the agent's disk watcher), parallel index builds spill
+// sort/temp space, and the whole-cluster baseline plus FS slack add fixed cost.
+// 5 GB of absolute headroom covers this across the realistic DB-size range.
+const diskCostPerJobGapMb = 5120
 
 // IsVerificationFitWithinRemainedDiskCapacity reports whether
 // running candidateBackup on this agent alongside runningBackups

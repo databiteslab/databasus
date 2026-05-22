@@ -34,6 +34,23 @@ func Test_BuildSpec_AppliesHardeningControls(t *testing.T) {
 	assert.Equal(t, []string{"POSTGRES_PASSWORD=pw"}, spec.Env)
 }
 
+func Test_BuildSpec_SetsRestoreTunedPostgresCmd(t *testing.T) {
+	containerManager := NewManager(nil, "agent-1", testutil.DiscardLogger())
+
+	spec := containerManager.buildSpec(spawnPlan{
+		verificationID: uuid.New(),
+		image:          "postgres@sha256:x",
+		password:       "pw",
+		cpuPerJob:      2,
+		ramMbPerJob:    1024,
+		networkID:      "net-id",
+		labels:         map[string]string{LabelAgentID: "agent-1"},
+	})
+
+	assert.Equal(t, restoreTunedPostgresCmd, spec.Cmd)
+	assert.Equal(t, "postgres", spec.Cmd[0])
+}
+
 func Test_GetInContainerConn_UsesInternalPort(t *testing.T) {
 	c := &PostgresContainer{password: "pw"}
 

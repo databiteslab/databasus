@@ -161,6 +161,7 @@ func (e *dockerEngine) CreateContainer(ctx context.Context, spec SpawnSpec) (str
 	resp, err := e.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Image:        spec.Image,
+			Cmd:          spec.Cmd,
 			Env:          spec.Env,
 			Labels:       spec.Labels,
 			ExposedPorts: network.PortSet{pgPublishedPort: struct{}{}},

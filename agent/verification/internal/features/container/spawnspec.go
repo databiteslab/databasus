@@ -26,6 +26,7 @@ type spawnPlan struct {
 type SpawnSpec struct {
 	Name        string
 	Image       string
+	Cmd         []string
 	Env         []string
 	Labels      map[string]string
 	NanoCPUs    int64

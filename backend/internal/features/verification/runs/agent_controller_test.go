@@ -137,7 +137,7 @@ func Test_ClaimVerification_WhenMultiplePendingFit_ReturnsOldestThatFitsBudget(t
 
 	assignment := ClaimVerificationViaAPI(
 		t, router, agent.Agent.ID, agent.Token,
-		AgentCapacity{MaxCPU: 4, MaxRAMMb: 4096, MaxDiskGb: 5, MaxConcurrentJobs: 2},
+		AgentCapacity{MaxCPU: 4, MaxRAMMb: 4096, MaxDiskGb: 6, MaxConcurrentJobs: 2},
 	)
 
 	assert.Equal(

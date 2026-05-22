@@ -28,6 +28,23 @@ const (
 // a blanket keep.
 var minimalCaps = []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"}
 
+// restoreTunedPostgresCmd runs the restore container's Postgres with crash
+// safety traded for a smaller on-disk footprint. The container is destroyed
+// after verification, so durability is irrelevant: fsync=off and
+// full_page_writes=off cut WAL volume, faster checkpoints recycle pg_wal
+// sooner. max_wal_senders=0 is mandatory under wal_level=minimal — Postgres
+// refuses to start otherwise. The first arg stays "postgres" so the official
+// image entrypoint still runs initdb.
+var restoreTunedPostgresCmd = []string{
+	"postgres",
+	"-c", "fsync=off",
+	"-c", "full_page_writes=off",
+	"-c", "synchronous_commit=off",
+	"-c", "wal_level=minimal",
+	"-c", "max_wal_senders=0",
+	"-c", "max_wal_size=1GB",
+}
+
 type Manager struct {
 	engine  *dockerEngine
 	agentID string
@@ -150,6 +167,7 @@ func (m *Manager) buildSpec(plan spawnPlan) SpawnSpec {
 	return SpawnSpec{
 		Name:        "databasus-verif-" + plan.verificationID.String(),
 		Image:       plan.image,
+		Cmd:         restoreTunedPostgresCmd,
 		Env:         []string{"POSTGRES_PASSWORD=" + plan.password},
 		Labels:      plan.labels,
 		NanoCPUs:    int64(plan.cpuPerJob) * 1_000_000_000,
