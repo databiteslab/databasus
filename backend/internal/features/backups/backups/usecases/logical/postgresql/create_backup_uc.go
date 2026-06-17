@@ -97,6 +97,15 @@ func (uc *CreatePostgresqlBackupUsecase) Execute(
 		backup.BackupRawDbSizeMb = rawSizeMB
 	}
 
+	timescaledbVersion, err := pg.GetTimescaleDBVersion(ctx, uc.fieldEncryptor)
+	if err != nil {
+		uc.logger.Warn("failed to detect timescaledb extension before backup",
+			"database_id", db.ID,
+			"error", err)
+	} else {
+		backup.TimescaledbVersion = timescaledbVersion
+	}
+
 	return uc.streamToStorage(
 		ctx,
 		backup,

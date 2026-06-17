@@ -43,10 +43,11 @@ var errAbortNoReport = errors.New("verification aborted; no report")
 var backupDownloadBackoffFn = backupDownloadBackoff
 
 type SpawnRequest struct {
-	PgMajor        string
-	CPUPerJob      int
-	RAMMbPerJob    int
-	VerificationID uuid.UUID
+	PgMajor            string
+	CPUPerJob          int
+	RAMMbPerJob        int
+	VerificationID     uuid.UUID
+	TimescaledbVersion string
 }
 
 type Runner struct {
@@ -162,10 +163,11 @@ func (r *Runner) executeJob(ctx context.Context, job *api.JobAssignment) {
 	}
 
 	jobContainer, err := r.spawner.Spawn(jobCtx, SpawnRequest{
-		PgMajor:        pgMajor,
-		CPUPerJob:      r.capacity.CPUPerJob,
-		RAMMbPerJob:    r.capacity.RAMMbPerJob,
-		VerificationID: job.VerificationID,
+		PgMajor:            pgMajor,
+		CPUPerJob:          r.capacity.CPUPerJob,
+		RAMMbPerJob:        r.capacity.RAMMbPerJob,
+		VerificationID:     job.VerificationID,
+		TimescaledbVersion: job.TimescaledbVersion,
 	})
 	if err != nil {
 		if jobCtx.Err() != nil {
@@ -233,6 +235,27 @@ func (r *Runner) executeJob(ctx context.Context, job *api.JobAssignment) {
 
 	parallelJobs := min(maxParallelRestoreJobs, r.capacity.CPUPerJob)
 
+	// TimescaleDB restores single-threaded and in restoring mode. Single-threaded because parallel
+	// pg_restore loads dependent _timescaledb_catalog rows before the rows they reference, tripping
+	// the catalog's own foreign keys. post_restore runs on the success path below, before stats; on
+	// failure the throwaway container is discarded, so nothing is left in restoring mode to repair
+	// (no defer, unlike the backend's user-facing restore). The hooks use the verifier (host) conn
+	// while pg_restore uses the in-container conn, but the database-level restoring GUC carries across.
+	if job.TimescaledbVersion != "" {
+		parallelJobs = 1
+
+		if err := r.restorer.RunTimescalePreRestore(jobCtx, jobContainer.GetVerifierConn()); err != nil {
+			if jobCtx.Err() != nil {
+				return
+			}
+
+			r.reportFailure(ctx, job.VerificationID, nil,
+				fmt.Sprintf("timescaledb_pre_restore: %v", err), runLogger)
+
+			return
+		}
+	}
+
 	restoreResult, err := r.restorer.RunPgRestore(
 		jobCtx, jobContainer, archivePath, jobContainer.GetInContainerConn(), parallelJobs)
 	if err != nil {
@@ -272,6 +295,19 @@ func (r *Runner) executeJob(ctx context.Context, job *api.JobAssignment) {
 			fmt.Sprintf("pg_restore exec: %v", err), runLogger)
 
 		return
+	}
+
+	if job.TimescaledbVersion != "" {
+		if err := r.restorer.RunTimescalePostRestore(jobCtx, jobContainer.GetVerifierConn()); err != nil {
+			if jobCtx.Err() != nil {
+				return
+			}
+
+			r.reportFailure(ctx, job.VerificationID, &restoreResult,
+				fmt.Sprintf("timescaledb_post_restore: %v", err), runLogger)
+
+			return
+		}
 	}
 
 	verifierConn := jobContainer.GetVerifierConn()

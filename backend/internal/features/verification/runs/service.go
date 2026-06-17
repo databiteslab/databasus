@@ -298,6 +298,7 @@ func (s *VerificationService) ClaimVerification(
 				BackupSizeMb:       candidate.Backup.BackupSizeMb,
 				MaxContainerDiskMb: float64(EstimateRequiredForRestoreDiskMb(candidate.Backup)),
 				Database:           sanitizeDatabaseForAgent(database),
+				TimescaledbVersion: candidate.Backup.TimescaledbVersion,
 			}
 
 			return nil

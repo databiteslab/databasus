@@ -73,6 +73,38 @@ func Test_ClaimVerification_WhenPendingFitsBudget_ReturnsJobAssignment(t *testin
 	assert.Equal(t, agent.Agent.ID, *updated.AgentID)
 }
 
+func Test_ClaimVerification_WhenBackupUsesTimescaleDB_ForwardsTimescaledbVersion(t *testing.T) {
+	router := createTestRouter()
+	owner := users_testing.CreateTestUser(users_enums.UserRoleAdmin)
+	workspace := workspaces_testing.CreateTestWorkspace("ws "+uuid.New().String(), owner, router)
+	defer workspaces_testing.RemoveTestWorkspace(workspace, router)
+
+	testStorage := storages.CreateTestStorage(workspace.ID)
+	defer storages.RemoveTestStorage(testStorage.ID)
+
+	notifier := notifiers.CreateTestNotifier(workspace.ID)
+	defer notifiers.RemoveTestNotifier(notifier)
+
+	database := databases.CreateTestDatabase(workspace.ID, testStorage, notifier)
+	defer databases.RemoveTestDatabase(database)
+
+	backup := backuping_logical.SeedTestBackup(t, database.ID, testStorage.ID, 100)
+	backup.TimescaledbVersion = "2.17.0"
+	require.NoError(t, backups_core_logical.GetBackupRepository().Save(backup))
+
+	EnqueueManualVerificationViaAPI(t, router, owner.Token, backup.ID)
+
+	agent := verification_agents.CreateTestVerificationAgent(t, router, owner.Token, "ts-claim-"+uuid.New().String())
+	defer verification_agents.RemoveTestVerificationAgent(t, router, owner.Token, agent.Agent.ID)
+
+	assignment := ClaimVerificationViaAPI(
+		t, router, agent.Agent.ID, agent.Token,
+		AgentCapacity{MaxCPU: 4, MaxRAMMb: 4096, MaxDiskGb: 50, MaxConcurrentJobs: 2},
+	)
+
+	assert.Equal(t, "2.17.0", assignment.TimescaledbVersion)
+}
+
 func Test_ClaimVerification_WhenBackupTooBigForBudget_DoNotAssignJobWithoutError(t *testing.T) {
 	router := createTestRouter()
 	owner := users_testing.CreateTestUser(users_enums.UserRoleAdmin)

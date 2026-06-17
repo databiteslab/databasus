@@ -32,6 +32,12 @@ type LogicalBackup struct {
 	EncryptionIV   *string                             `json:"-"          gorm:"column:encryption_iv"`
 	Encryption     backups_core_enums.BackupEncryption `json:"encryption" gorm:"column:encryption;type:text;not null;default:'NONE'"`
 
+	// TimescaledbVersion is the source's timescaledb extension version captured at backup
+	// time, or "" when the source has no timescaledb. Non-empty marks the backup as needing
+	// the TimescaleDB restore procedure, and the verification agent uses the exact version to
+	// pull a matching engine image (pg_restore cannot cross extension versions).
+	TimescaledbVersion string `json:"timescaledbVersion" gorm:"column:timescaledb_version;type:text;not null;default:''"`
+
 	CreatedAt time.Time `json:"createdAt" gorm:"column:created_at"`
 }
 

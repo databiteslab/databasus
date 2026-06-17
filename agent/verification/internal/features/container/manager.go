@@ -21,6 +21,11 @@ const (
 	// engineImageRepo is the official Postgres image; the job's major version
 	// (from the backend assignment) is appended as the tag.
 	engineImageRepo = "postgres"
+
+	// timescaleImageRepo carries the timescaledb extension; the tag is
+	// "<extversion>-pg<major>" so the engine matches the dump exactly
+	// (pg_restore cannot cross extension versions).
+	timescaleImageRepo = "timescale/timescaledb"
 )
 
 // minimalCaps are the only capabilities added back after CapDrop ALL — exactly
@@ -94,7 +99,7 @@ func (m *Manager) PurgeContainers(ctx context.Context) {
 // Spawn's every failure is pre-pg_restore — the runner reports it with no exit
 // code (retryable AgentSetupFailed), never BackupRejected.
 func (m *Manager) Spawn(jobCtx context.Context, req SpawnRequest) (*PostgresContainer, error) {
-	image := imageForMajor(req.PgMajor)
+	image := imageForJob(req)
 
 	if err := m.engine.EnsureImage(jobCtx, image); err != nil {
 		return nil, fmt.Errorf("ensure image: %w", err)
@@ -239,9 +244,14 @@ func pingOnce(ctx context.Context, conn dbconn.Conn) bool {
 	return pgConn.Ping(pingCtx) == nil
 }
 
-// imageForMajor returns the Docker image tag the agent spawns for a given
-// Postgres major. Extracted so the major-to-image contract is unit-testable
-// without standing up a Docker engine.
+func imageForJob(req SpawnRequest) string {
+	if req.TimescaledbVersion != "" {
+		return fmt.Sprintf("%s:%s-pg%s", timescaleImageRepo, req.TimescaledbVersion, req.PgMajor)
+	}
+
+	return imageForMajor(req.PgMajor)
+}
+
 func imageForMajor(pgMajor string) string {
 	return engineImageRepo + ":" + pgMajor
 }

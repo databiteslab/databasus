@@ -269,6 +269,46 @@ func Test_ExecuteJob_WhenAllSucceeds_ReportsCompletedWithStats(t *testing.T) {
 	assert.Equal(t, "public", report.TableStats[0].SchemaName)
 }
 
+func timescaleJob() *api.JobAssignment {
+	job := postgresJob()
+	job.TimescaledbVersion = "2.17.0"
+
+	return job
+}
+
+func Test_ExecuteJob_WhenTimescaleJobSucceeds_RunsPreRestoreThenRestoreThenPostRestore(t *testing.T) {
+	apiClient := &fakeAPI{downloadBody: []byte("ARCHIVE")}
+	restorer := &fakeRestorer{runResult: restore.Result{PgRestoreExitCode: 0}}
+	stats := &fakeStats{stats: verifier.Stats{TableCount: 1}}
+	r := newTestRunner(apiClient, okSpawner(), restorer, stats, newFakeRegistrar())
+	r.connAlive = func(context.Context, dbconn.Conn) bool { return true }
+
+	r.executeJob(t.Context(), timescaleJob())
+
+	report, ok := apiClient.lastReport()
+	require.True(t, ok)
+	assert.Equal(t, api.VerificationStatusCompleted, report.Status)
+	assert.Equal(t, []string{"pre", "restore", "post"}, restorer.calls,
+		"timescaledb restore must enter restoring mode, restore, then leave it")
+	assert.Equal(t, 1, restorer.runParallelJobs,
+		"timescaledb restore must be single-threaded to keep _timescaledb_catalog FK order")
+}
+
+func Test_ExecuteJob_WhenNonTimescaleJob_DoesNotRunTimescaleHooks(t *testing.T) {
+	apiClient := &fakeAPI{downloadBody: []byte("ARCHIVE")}
+	restorer := &fakeRestorer{runResult: restore.Result{PgRestoreExitCode: 0}}
+	stats := &fakeStats{stats: verifier.Stats{TableCount: 1}}
+	r := newTestRunner(apiClient, okSpawner(), restorer, stats, newFakeRegistrar())
+	r.connAlive = func(context.Context, dbconn.Conn) bool { return true }
+
+	r.executeJob(t.Context(), postgresJob())
+
+	assert.Equal(t, []string{"restore"}, restorer.calls,
+		"a non-timescaledb restore must not run the timescaledb hooks")
+	assert.Equal(t, 2, restorer.runParallelJobs,
+		"a non-timescaledb restore keeps parallel jobs (CPUPerJob)")
+}
+
 func Test_ExecuteJob_WhenAbortedBeforeFailedReport_DoesNotReport(t *testing.T) {
 	apiClient := &fakeAPI{}
 	spawner := &fakeSpawner{err: errors.New("spawn failed")}

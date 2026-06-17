@@ -95,3 +95,15 @@ func Test_ImageForMajor_ReturnsPostgresOfficialTagPerMajor(t *testing.T) {
 		})
 	}
 }
+
+func Test_ImageForJob_WhenTimescaleVersionSet_ReturnsVersionMatchedTimescaleImage(t *testing.T) {
+	image := imageForJob(SpawnRequest{PgMajor: "17", TimescaledbVersion: "2.17.0"})
+
+	assert.Equal(t, "timescale/timescaledb:2.17.0-pg17", image)
+}
+
+func Test_ImageForJob_WhenNoTimescaleVersion_ReturnsStockPostgresImage(t *testing.T) {
+	image := imageForJob(SpawnRequest{PgMajor: "17"})
+
+	assert.Equal(t, "postgres:17", image)
+}

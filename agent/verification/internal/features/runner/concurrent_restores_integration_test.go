@@ -192,6 +192,9 @@ func (r *barrierRestorer) RunPgRestore(
 	return restore.Result{PgRestoreExitCode: 0, DurationMs: 1}, nil
 }
 
+func (r *barrierRestorer) RunTimescalePreRestore(context.Context, dbconn.Conn) error  { return nil }
+func (r *barrierRestorer) RunTimescalePostRestore(context.Context, dbconn.Conn) error { return nil }
+
 func makeConcurrentAssignment(id uuid.UUID) *api.JobAssignment {
 	return &api.JobAssignment{
 		VerificationID:     id,

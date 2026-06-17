@@ -99,22 +99,55 @@ func (uc *RestorePostgresqlBackupUsecase) restoreCustomType(
 		pg.CpuCount,
 	)
 
-	// If excluding extensions, we must use file-based restore (requires TOC file generation)
-	// Also use file-based restore for parallel jobs (multiple CPUs)
-	if isExcludeExtensions || pg.CpuCount > 1 {
-		return uc.restoreViaFile(
-			parentCtx,
-			originalDB,
-			pgBin,
-			backup,
-			storage,
-			pg,
-			isExcludeExtensions,
-		)
+	// File-based restore for parallel jobs (multiple CPUs) or extension exclusion (needs a TOC file);
+	// otherwise stream directly via stdin. A timescaledb backup uses whichever path applies — the
+	// pre/post hooks wrap it the same way (they only set a database-level GUC, so streaming is kept).
+	runRestore := func() error {
+		if isExcludeExtensions || pg.CpuCount > 1 {
+			return uc.restoreViaFile(parentCtx, originalDB, pgBin, backup, storage, pg, isExcludeExtensions)
+		}
+
+		return uc.restoreViaStdin(parentCtx, originalDB, pgBin, backup, storage, pg)
 	}
 
-	// Single CPU without extension exclusion: stream directly via stdin
-	return uc.restoreViaStdin(parentCtx, originalDB, pgBin, backup, storage, pg)
+	if backup.TimescaledbVersion != "" {
+		return uc.withTimescaleHooks(parentCtx, pg, runRestore)
+	}
+
+	return runRestore()
+}
+
+// withTimescaleHooks wraps a restore in the TimescaleDB procedure: ensure the extension exists and
+// enter restoring mode before pg_restore, then leave restoring mode after — unconditionally, so a
+// failed restore never leaves the target stuck in restoring mode. See timescaledb.go for why the
+// database-level GUC set here is inherited by the separate pg_restore process.
+func (uc *RestorePostgresqlBackupUsecase) withTimescaleHooks(
+	ctx context.Context,
+	pg *pgtypes.PostgresqlLogicalDatabase,
+	runRestore func() error,
+) (err error) {
+	encryptor := util_encryption.GetFieldEncryptor()
+
+	if err := pg.RunTimescaleDBPreRestore(ctx, encryptor); err != nil {
+		return fmt.Errorf("timescaledb_pre_restore failed: %w", err)
+	}
+
+	uc.logger.Info("entered timescaledb restoring mode")
+
+	defer func() {
+		if postErr := pg.RunTimescaleDBPostRestore(ctx, encryptor); postErr != nil {
+			uc.logger.Error(
+				"timescaledb_post_restore failed; target database may be left in restoring mode",
+				"error", postErr,
+			)
+
+			if err == nil {
+				err = fmt.Errorf("timescaledb_post_restore failed: %w", postErr)
+			}
+		}
+	}()
+
+	return runRestore()
 }
 
 // restoreViaStdin streams backup via stdin for single CPU restore
@@ -136,8 +169,11 @@ func (uc *RestorePostgresqlBackupUsecase) restoreViaStdin(
 		"-U", pg.Username,
 		"-d", *pg.Database,
 		"--verbose",
-		"--clean",
-		"--if-exists",
+	}
+	// --clean would DROP EXTENSION timescaledb, taking the catalog tables that pre_restore needs
+	// with it; TimescaleDB restores into a clean target without it. Non-timescaledb keeps --clean.
+	if backup.TimescaledbVersion == "" {
+		args = append(args, "--clean", "--if-exists")
 	}
 	if !pg.IsRestoreOwnership {
 		args = append(args, "--no-owner")
@@ -352,9 +388,15 @@ func (uc *RestorePostgresqlBackupUsecase) restoreViaFile(
 		pg.CpuCount,
 	)
 
-	// Use parallel jobs based on CPU count
-	// Cap between 1 and 8 to avoid overwhelming the server
+	isTimescale := backup.TimescaledbVersion != ""
+
+	// TimescaleDB restores single-threaded: with -j the parallel loop loads dependent
+	// _timescaledb_catalog rows (chunk_constraint, chunk_index) before the chunk rows they reference,
+	// tripping the catalog's own foreign keys. Otherwise cap between 1 and 8.
 	parallelJobs := max(1, min(pg.CpuCount, 8))
+	if isTimescale {
+		parallelJobs = 1
+	}
 
 	args := []string{
 		"-Fc",                            // expect custom type
@@ -365,8 +407,11 @@ func (uc *RestorePostgresqlBackupUsecase) restoreViaFile(
 		"-U", pg.Username,
 		"-d", *pg.Database,
 		"--verbose",
-		"--clean",
-		"--if-exists",
+	}
+	// --clean would DROP EXTENSION timescaledb, taking the catalog tables that pre_restore needs
+	// with it; TimescaleDB restores into a clean target without it. Non-timescaledb keeps --clean.
+	if !isTimescale {
+		args = append(args, "--clean", "--if-exists")
 	}
 	if !pg.IsRestoreOwnership {
 		args = append(args, "--no-owner")
