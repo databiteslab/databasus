@@ -52,8 +52,8 @@ func Test_ClaimVerification_WhenServer200_SendsNestedMaxRamMbAndDeserializes(t *
 			"backupSizeMb":       120.5,
 			"maxContainerDiskMb": 800.25,
 			"database": map[string]any{
-				"type":       "POSTGRES_LOGICAL",
-				"postgresql": map[string]any{"version": "16"},
+				"type":              "POSTGRES_LOGICAL",
+				"postgresqlLogical": map[string]any{"version": "16"},
 			},
 		})
 	}))
