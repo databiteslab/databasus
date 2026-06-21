@@ -51,8 +51,8 @@ export function EditStorageComponent({
     setIsSaving(true);
 
     try {
-      await storageApi.saveStorage(storage);
-      onChanged(storage);
+      const savedStorage = await storageApi.saveStorage(storage);
+      onChanged(savedStorage);
       setIsUnsaved(false);
     } catch (e) {
       alert((e as Error).message);

@@ -659,9 +659,14 @@ export const EditPhysicalBackupConfigComponent = ({
             isShowName
             isShowClose={false}
             onClose={() => setShowCreateStorage(false)}
-            onChanged={() => {
-              loadStorages();
+            onChanged={async (createdStorage) => {
+              const hadExistingStorage = !!backupConfig?.storage?.id;
+              await loadStorages();
+              updateBackupConfig({ storage: createdStorage });
               setShowCreateStorage(false);
+              if (hadExistingStorage) {
+                setIsShowWarn(true);
+              }
             }}
           />
         </Modal>
