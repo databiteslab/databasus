@@ -176,6 +176,12 @@ services:
     volumes:
       - ./databasus-data:/databasus-data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "databasus", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 ```
 
 Then run:

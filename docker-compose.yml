@@ -17,6 +17,12 @@ services:
       - ./databasus-data:/databasus-data
     container_name: databasus-local
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "databasus", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   # ================================================================
   # Backend dev services

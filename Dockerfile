@@ -165,8 +165,11 @@ WORKDIR /app
 # Copy Goose from build stage
 COPY --from=backend-build /usr/local/bin/goose /usr/local/bin/goose
 
-# Copy app binary 
+# Copy app binary
 COPY --from=backend-build /app/main .
+
+# Expose the binary as the `databasus` command on PATH (e.g. `databasus healthcheck`)
+RUN ln -s /app/main /usr/local/bin/databasus
 
 # Copy migrations directory
 COPY backend/migrations ./migrations
@@ -426,6 +429,12 @@ LABEL org.opencontainers.image.source="https://github.com/databasus/databasus"
 RUN chmod +x /app/start.sh
 
 EXPOSE 4005
+
+# Liveness probe: the runtime image ships no wget/curl, so the binary checks
+# itself. Targets the dependency-free /system/version endpoint (not the deep
+# /system/health) so a degraded-but-serving instance is never restarted.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD ["databasus", "healthcheck"]
 
 # Volume for PostgreSQL data
 VOLUME ["/databasus-data"]

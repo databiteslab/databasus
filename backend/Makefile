@@ -4,7 +4,7 @@ PORT ?= 4005
 TEST_PARALLEL_WORKERS ?= 8
 
 run: kill-stale
-	go run cmd/main.go
+	go run ./cmd
 
 test: clean-testcontainers pull-testcontainers
 	TEST_PARALLEL_WORKERS=$(TEST_PARALLEL_WORKERS) go run ./cmd/cleanup_test_db

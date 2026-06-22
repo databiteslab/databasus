@@ -66,7 +66,15 @@ import (
 // @host localhost:4005
 // @BasePath /api/v1
 // @schemes http
+
+const serverAddr = ":4005"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		runHealthcheckCommand() // exits the process
+		return
+	}
+
 	log := logger.GetLogger()
 
 	cache_utils.TestCacheConnection()
@@ -172,7 +180,7 @@ func resetPassword(email, newPassword string, log *slog.Logger) {
 
 func startServerWithGracefulShutdown(log *slog.Logger, app *gin.Engine) {
 	srv := &http.Server{
-		Addr:    ":4005",
+		Addr:    serverAddr,
 		Handler: app,
 	}
 
