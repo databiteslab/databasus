@@ -149,6 +149,16 @@ type EnvVariables struct {
 	BackupStaleSessionWatchdogEnabled      bool `env:"BACKUP_STALE_SESSION_WATCHDOG_ENABLED"`
 	BackupStaleSessionCheckIntervalMinutes int  `env:"BACKUP_STALE_SESSION_CHECK_INTERVAL_MINUTES"`
 	BackupStaleSessionMaxDurationHours     int  `env:"BACKUP_STALE_SESSION_MAX_DURATION_HOURS"`
+
+	// Maximum runtime for a single pg_dump backup attempt before Databasus cancels its
+	// own context and kills the pg_dump process. This bounds how long a single backup
+	// job can run on the Databasus side; it does NOT guarantee the PostgreSQL backend
+	// is also terminated (see BackupStaleSessionWatchdogEnabled for that).
+	//
+	// WARNING: if a database's realistic full backup duration is longer than this
+	// value, every backup attempt for it will fail every time once it hits the
+	// timeout. Raise this value for deployments with very large databases.
+	BackupPgDumpMaxDurationHours int `env:"BACKUP_PG_DUMP_MAX_DURATION_HOURS"`
 }
 
 var (
@@ -323,6 +333,9 @@ func loadEnvVariables() {
 	}
 	if env.BackupStaleSessionMaxDurationHours <= 0 {
 		env.BackupStaleSessionMaxDurationHours = 12
+	}
+	if env.BackupPgDumpMaxDurationHours <= 0 {
+		env.BackupPgDumpMaxDurationHours = 2
 	}
 
 	// Valkey

@@ -30,7 +30,6 @@ import (
 )
 
 const (
-	backupTimeout            = 23 * time.Hour
 	shutdownCheckInterval    = 1 * time.Second
 	copyBufferSize           = 8 * 1024 * 1024
 	progressReportIntervalMB = 1.0
@@ -398,6 +397,7 @@ func (uc *CreatePostgresqlBackupUsecase) isOlderPostgresVersion(
 func (uc *CreatePostgresqlBackupUsecase) createBackupContext(
 	parentCtx context.Context,
 ) (context.Context, context.CancelFunc) {
+	backupTimeout := time.Duration(config.GetEnv().BackupPgDumpMaxDurationHours) * time.Hour
 	ctx, cancel := context.WithTimeout(parentCtx, backupTimeout)
 
 	go func() {

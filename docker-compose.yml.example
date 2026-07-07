@@ -42,3 +42,12 @@ services:
       # backup durations for faster protection against stuck sessions.
       # Default: 12
       # BACKUP_STALE_SESSION_MAX_DURATION_HOURS: "12"
+      #
+      # Maximum runtime (in hours) for a single pg_dump backup attempt before
+      # Databasus cancels it. This only bounds the Databasus-side process; it
+      # does not by itself guarantee the PostgreSQL backend is terminated too
+      # (see BACKUP_STALE_SESSION_MAX_DURATION_HOURS above for that).
+      # WARNING: if a database's realistic full backup duration is longer
+      # than this value, every backup attempt for it will fail every time.
+      # Raise this for deployments with very large databases. Default: 2
+      # BACKUP_PG_DUMP_MAX_DURATION_HOURS: "2"
