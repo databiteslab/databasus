@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"databasus-backend/internal/config"
 	backups_core "databasus-backend/internal/features/backups/backups/core"
 	"databasus-backend/internal/features/backups/backups/usecases"
 	backups_config "databasus-backend/internal/features/backups/config"
@@ -95,4 +96,19 @@ func GetBackupNodesRegistry() *BackupNodesRegistry {
 
 func GetBackupCleaner() *BackupCleaner {
 	return backupCleaner
+}
+
+var staleSessionWatchdog = &StaleSessionWatchdog{
+	databases.GetDatabaseService(),
+	encryption.GetFieldEncryptor(),
+	logger.GetLogger(),
+	config.GetEnv().BackupStaleSessionWatchdogEnabled,
+	time.Duration(config.GetEnv().BackupStaleSessionCheckIntervalMinutes) * time.Minute,
+	time.Duration(config.GetEnv().BackupStaleSessionMaxDurationHours) * time.Hour,
+	sync.Once{},
+	atomic.Bool{},
+}
+
+func GetStaleSessionWatchdog() *StaleSessionWatchdog {
+	return staleSessionWatchdog
 }

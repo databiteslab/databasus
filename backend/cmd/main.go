@@ -279,6 +279,10 @@ func runBackgroundTasks(log *slog.Logger) {
 			backuping.GetBackupCleaner().Run(ctx)
 		})
 
+		go runWithPanicLogging(log, "stale pg_dump session watchdog", func() {
+			backuping.GetStaleSessionWatchdog().Run(ctx)
+		})
+
 		go runWithPanicLogging(log, "restore background service", func() {
 			restoring.GetRestoresScheduler().Run(ctx)
 		})

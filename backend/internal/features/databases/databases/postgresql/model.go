@@ -847,6 +847,81 @@ func (p *PostgresqlDatabase) CreateReadOnlyUser(
 	return "", "", errors.New("failed to generate unique username after 3 attempts")
 }
 
+// TerminateStaleBackupSessions finds pg_dump backends on this database that have been
+// running longer than maxSessionAge and terminates them via pg_terminate_backend.
+//
+// This exists because pg_dump explicitly runs "SET statement_timeout = 0" and
+// "SET idle_in_transaction_session_timeout = 0" on its own connection right after
+// connecting (see PostgreSQL's pg_dump.c setup_connection()). That means neither a
+// postgresql.conf default nor a client-side PGOPTIONS setting can bound how long a
+// pg_dump session stays open - pg_dump always overrides them back to disabled. A
+// crashed backup process, a dropped network connection, or a stalled COPY can
+// therefore leave a pg_dump backend open for many hours, holding an AccessShareLock
+// that blocks schema migrations (ALTER TABLE requires AccessExclusiveLock). The only
+// reliable way to bound this is to terminate the backend externally.
+//
+// Only sessions owned by the same database user Databasus connects with are
+// terminated, since pg_terminate_backend requires either superuser privileges or
+// being the same role as the target backend.
+func (p *PostgresqlDatabase) TerminateStaleBackupSessions(
+	ctx context.Context,
+	logger *slog.Logger,
+	encryptor encryption.FieldEncryptor,
+	databaseID uuid.UUID,
+	maxSessionAge time.Duration,
+) (int, error) {
+	if p.Database == nil || *p.Database == "" {
+		return 0, nil
+	}
+
+	password, err := decryptPasswordIfNeeded(p.Password, encryptor, databaseID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to decrypt password: %w", err)
+	}
+
+	connStr := buildConnectionStringForDB(p, *p.Database, password)
+
+	conn, err := pgx.Connect(ctx, connStr)
+	if err != nil {
+		return 0, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer func() {
+		if closeErr := conn.Close(ctx); closeErr != nil {
+			logger.Error("Failed to close connection", "error", closeErr)
+		}
+	}()
+
+	stalePids, err := findStalePgDumpBackends(ctx, conn, maxSessionAge)
+	if err != nil {
+		return 0, err
+	}
+
+	terminatedCount := 0
+	for _, pid := range stalePids {
+		if err := terminateBackend(ctx, conn, pid); err != nil {
+			logger.Error(
+				"Failed to terminate stale pg_dump session",
+				"pid", pid,
+				"host", p.Host,
+				"database", *p.Database,
+				"error", err,
+			)
+			continue
+		}
+
+		logger.Warn(
+			"Terminated stale pg_dump session holding locks",
+			"pid", pid,
+			"host", p.Host,
+			"database", *p.Database,
+			"maxSessionAge", maxSessionAge,
+		)
+		terminatedCount++
+	}
+
+	return terminatedCount, nil
+}
+
 // testSingleDatabaseConnection tests connection to a specific database for pg_dump
 func testSingleDatabaseConnection(
 	logger *slog.Logger,
@@ -1106,4 +1181,61 @@ func extractSupabaseProjectID(username string) string {
 		return username[idx+1:]
 	}
 	return ""
+}
+
+// findStalePgDumpBackends returns the PIDs of pg_dump backends (of the current user)
+// whose transaction has been open longer than maxSessionAge, regardless of whether
+// they are currently "active" (e.g. a stalled COPY) or "idle in transaction" (e.g. a
+// client that crashed or disconnected mid-dump).
+func findStalePgDumpBackends(
+	ctx context.Context,
+	conn *pgx.Conn,
+	maxSessionAge time.Duration,
+) ([]int32, error) {
+	staleBefore := time.Now().UTC().Add(-maxSessionAge)
+
+	rows, err := conn.Query(ctx, `
+		SELECT pid
+		FROM pg_stat_activity
+		WHERE application_name = 'pg_dump'
+		  AND usename = current_user
+		  AND pid <> pg_backend_pid()
+		  AND xact_start IS NOT NULL
+		  AND xact_start < $1
+	`, staleBefore)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query stale pg_dump sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var pids []int32
+	for rows.Next() {
+		var pid int32
+		if err := rows.Scan(&pid); err != nil {
+			return nil, fmt.Errorf("failed to scan stale pg_dump session pid: %w", err)
+		}
+		pids = append(pids, pid)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating stale pg_dump sessions: %w", err)
+	}
+
+	return pids, nil
+}
+
+// terminateBackend sends a termination signal to a PostgreSQL backend. It requires
+// the connection's role to either be a superuser or match the target backend's role.
+func terminateBackend(ctx context.Context, conn *pgx.Conn, pid int32) error {
+	var wasSignaled bool
+
+	if err := conn.QueryRow(ctx, "SELECT pg_terminate_backend($1)", pid).Scan(&wasSignaled); err != nil {
+		return fmt.Errorf("pg_terminate_backend failed: %w", err)
+	}
+
+	if !wasSignaled {
+		return errors.New("pg_terminate_backend returned false (insufficient privilege or already gone)")
+	}
+
+	return nil
 }

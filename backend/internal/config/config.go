@@ -132,6 +132,23 @@ type EnvVariables struct {
 	// Backup table filtering (global, applies to all PostgreSQL backups)
 	BackupExcludeTables []string // from BACKUP_EXCLUDE_TABLES env var
 	BackupIncludeTables []string // from BACKUP_INCLUDE_TABLES env var
+
+	// Stale pg_dump session watchdog. pg_dump explicitly disables statement_timeout
+	// and idle_in_transaction_session_timeout on its own connection, so neither server
+	// defaults nor client-side session settings can bound a stuck pg_dump session. This
+	// watchdog periodically terminates pg_dump backends that exceed the configured age
+	// to prevent them from indefinitely holding locks that block schema migrations.
+	//
+	// The max duration default is intentionally conservative (12h): Databasus is used
+	// with databases of very different sizes, and a value tuned to one deployment's
+	// "normal" backup duration could kill a legitimate, still-progressing backup on
+	// another deployment with much larger tables. Operators who know their largest
+	// database's realistic backup duration should lower this value (e.g. to 2-4h, as
+	// recommended for typical deployments) to get faster protection against stuck
+	// sessions. Set BackupStaleSessionWatchdogEnabled to false to disable entirely.
+	BackupStaleSessionWatchdogEnabled      bool `env:"BACKUP_STALE_SESSION_WATCHDOG_ENABLED"`
+	BackupStaleSessionCheckIntervalMinutes int  `env:"BACKUP_STALE_SESSION_CHECK_INTERVAL_MINUTES"`
+	BackupStaleSessionMaxDurationHours     int  `env:"BACKUP_STALE_SESSION_MAX_DURATION_HOURS"`
 }
 
 var (
@@ -296,6 +313,16 @@ func loadEnvVariables() {
 				env.BackupIncludeTables = append(env.BackupIncludeTables, trimmed)
 			}
 		}
+	}
+
+	if os.Getenv("BACKUP_STALE_SESSION_WATCHDOG_ENABLED") == "" {
+		env.BackupStaleSessionWatchdogEnabled = true
+	}
+	if env.BackupStaleSessionCheckIntervalMinutes <= 0 {
+		env.BackupStaleSessionCheckIntervalMinutes = 10
+	}
+	if env.BackupStaleSessionMaxDurationHours <= 0 {
+		env.BackupStaleSessionMaxDurationHours = 12
 	}
 
 	// Valkey

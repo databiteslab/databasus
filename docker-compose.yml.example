@@ -24,3 +24,21 @@ services:
       #
       # Comma-separated list of tables to include (backup ONLY these tables)
       # BACKUP_INCLUDE_TABLES: "public.important_table"
+      #
+      # Whether the stale pg_dump session watchdog runs at all. Default: true
+      # BACKUP_STALE_SESSION_WATCHDOG_ENABLED: "true"
+      #
+      # How often (in minutes) to scan PostgreSQL databases for stuck pg_dump
+      # sessions. Default: 10
+      # BACKUP_STALE_SESSION_CHECK_INTERVAL_MINUTES: "10"
+      #
+      # Maximum age (in hours) a pg_dump session may reach before it is
+      # terminated via pg_terminate_backend. Stuck pg_dump sessions hold locks
+      # that can block schema migrations (ALTER TABLE) indefinitely.
+      # IMPORTANT: this must be set higher than your largest database's
+      # realistic backup duration, or the watchdog will kill a legitimate,
+      # still-progressing backup. The conservative default (12h) is safe for
+      # most deployments; lower it (e.g. to 2-4h) once you know your actual
+      # backup durations for faster protection against stuck sessions.
+      # Default: 12
+      # BACKUP_STALE_SESSION_MAX_DURATION_HOURS: "12"
