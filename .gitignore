@@ -16,7 +16,10 @@ node_modules/
 .DS_Store
 /scripts
 .vscode/settings.json
-.claude
+.claude/*
+!.claude/agents/
+!.claude/hooks/
+!.claude/settings.json
 backend/cleanup_test_db.exe
 plans/
 

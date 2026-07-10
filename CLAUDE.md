@@ -49,6 +49,15 @@ Work happens inside the repo's [Dev Container](.devcontainer/devcontainer.json).
 
 Reread the diff with fresh eyes and **list** (don't silently apply) refactor suggestions: unclear names, duplication, dead code, deep nesting, misplaced responsibilities, leaky abstractions. Keep suggestions concrete (file + lines), behavior-preserving, and scoped to the current change. If the diff is already clean, say so in one line.
 
+### Mandatory compliance review
+
+Every non-trivial change is audited twice by the [`claude-md-reviewer`](.claude/agents/claude-md-reviewer.md) subagent — against this document **and** the module doc for each area it touches (`backend/CLAUDE.md`, `agent/verification/CLAUDE.md`, `frontend/CLAUDE.md`). The module docs add stack-specific rules on top of this one; they never replace it, so a change under `backend/` answers to both.
+
+1. **After planning, before writing code** — it checks the proposed names, file placement, and any planned backward-compat shims while they're still cheap to change.
+2. **After implementing, before finishing the turn** — it checks the working-tree diff and runs the linter for each directory the diff touches.
+
+The reviewer is read-only: it reports findings, you apply the fixes. Resolve every `CHANGES REQUIRED` finding before moving on. Hooks in [`.claude/settings.json`](.claude/settings.json) prompt for both checkpoints, but the obligation is this rule, not the hook — honour it if hooks are disabled.
+
 ### Naming
 
 Name variables and functions for **intent**, not mechanism. Naming is the biggest readability lever — avoid generic placeholders (`data`, `handle`, `process`, `tmp`, `helper`, `manager`), type-suffix noise (`nameStr`, `agentList`, `tokenObj`), and mechanism-flavored names (`tickNow`, `hbResp`, `dataObj`).
