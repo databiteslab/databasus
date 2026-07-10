@@ -74,9 +74,11 @@ func (s *server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	path := s.binaryPath
+	version := s.version
 	s.mu.RUnlock()
 
 	log.Printf("GET verification-agent (arch=%s) -> %s", r.URL.Query().Get("arch"), path)
+	w.Header().Set("X-Databasus-Version", version)
 	http.ServeFile(w, r, path)
 }
 

@@ -65,7 +65,10 @@ func CheckAndUpdate(apiClient *api.Client, currentVersion string, isDev bool, lo
 	downloadCtx, cancelDownload := context.WithTimeout(context.Background(), binaryDownloadTimeout)
 	defer cancelDownload()
 
-	if err := apiClient.DownloadVerificationAgentBinary(downloadCtx, runtime.GOARCH, tempPath); err != nil {
+	downloadedVersion, err := apiClient.DownloadVerificationAgentBinary(
+		downloadCtx, runtime.GOARCH, tempPath, serverVersion,
+	)
+	if err != nil {
 		return false, fmt.Errorf("failed to download update: %w", err)
 	}
 
@@ -73,15 +76,20 @@ func CheckAndUpdate(apiClient *api.Client, currentVersion string, isDev bool, lo
 		return false, fmt.Errorf("failed to set permissions on update: %w", err)
 	}
 
-	if err := verifyBinary(tempPath, serverVersion); err != nil {
+	if err := verifyBinary(tempPath, downloadedVersion); err != nil {
 		return false, fmt.Errorf("update verification failed: %w", err)
+	}
+
+	if downloadedVersion == currentVersion {
+		log.Info("Agent version is up to date", "version", currentVersion)
+		return false, nil
 	}
 
 	if err := os.Rename(tempPath, selfPath); err != nil {
 		return false, fmt.Errorf("failed to replace binary (try --skip-update if this persists): %w", err)
 	}
 
-	log.Info("Agent binary updated", "version", serverVersion)
+	log.Info("Agent binary updated", "version", downloadedVersion)
 
 	return true, nil
 }

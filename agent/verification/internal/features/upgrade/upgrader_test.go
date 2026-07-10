@@ -129,6 +129,65 @@ func Test_CheckAndUpdate_WhenServerVersionMatches_DoesNotDownload(t *testing.T) 
 	assert.Equal(t, int32(0), downloadHits.Load())
 }
 
+type fakeBackend struct {
+	versionEndpointReports string
+	downloadHeaderReports  string
+	servedBinaryPrints     string
+}
+
+// Both callers below stop before CheckAndUpdate's os.Rename, which would
+// otherwise overwrite the running test binary.
+func startFakeBackend(t *testing.T, backend fakeBackend) *httptest.Server {
+	t.Helper()
+
+	binary, err := os.ReadFile(buildVersionHelper(t, backend.servedBinaryPrints))
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/system/version" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"version": backend.versionEndpointReports})
+
+			return
+		}
+
+		w.Header().Set("X-Databasus-Version", backend.downloadHeaderReports)
+		_, _ = w.Write(binary)
+	}))
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+func Test_CheckAndUpdate_WhenServerVersionIsStaleButBinaryMatchesCurrent_SkipsUpgrade(t *testing.T) {
+	server := startFakeBackend(t, fakeBackend{
+		versionEndpointReports: "v3.43.0",
+		downloadHeaderReports:  "v3.45.0",
+		servedBinaryPrints:     "v3.45.0",
+	})
+	client := api.NewClient(server.URL, "", "", testutil.DiscardLogger())
+
+	upgraded, err := CheckAndUpdate(client, "v3.45.0", false, testutil.DiscardLogger())
+
+	require.NoError(t, err)
+	assert.False(t, upgraded, "a stale /system/version must not make the agent re-exec into itself")
+}
+
+func Test_CheckAndUpdate_WhenDownloadedBinaryDisagreesWithVersionHeader_ReturnsMismatchError(t *testing.T) {
+	server := startFakeBackend(t, fakeBackend{
+		versionEndpointReports: "v3.46.0",
+		downloadHeaderReports:  "v3.46.0",
+		servedBinaryPrints:     "v3.44.0",
+	})
+	client := api.NewClient(server.URL, "", "", testutil.DiscardLogger())
+
+	upgraded, err := CheckAndUpdate(client, "v3.44.0", false, testutil.DiscardLogger())
+
+	require.Error(t, err)
+	assert.False(t, upgraded)
+	assert.Contains(t, err.Error(), "version mismatch")
+}
+
 func Test_CheckAndUpdate_WhenServerUnreachable_ReturnsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	server.Close()

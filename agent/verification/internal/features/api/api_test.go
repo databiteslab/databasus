@@ -339,6 +339,7 @@ func Test_DownloadVerificationAgentBinary_WhenServerServesFile_WritesItToDisk(t 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/v1/system/verification-agent", r.URL.Path)
 		assert.Equal(t, "arm64", r.URL.Query().Get("arch"))
+		w.Header().Set(agentVersionHeader, "v3.45.0")
 		_, _ = w.Write(payload)
 	}))
 	t.Cleanup(server.Close)
@@ -346,12 +347,70 @@ func Test_DownloadVerificationAgentBinary_WhenServerServesFile_WritesItToDisk(t 
 	client := NewClient(server.URL, "", "", testutil.DiscardLogger())
 	destPath := filepath.Join(t.TempDir(), "agent")
 
-	err := client.DownloadVerificationAgentBinary(t.Context(), "arm64", destPath)
+	downloadedVersion, err := client.DownloadVerificationAgentBinary(
+		t.Context(), "arm64", destPath, "v3.43.0",
+	)
 	require.NoError(t, err)
+	assert.Equal(t, "v3.45.0", downloadedVersion)
 
 	written, err := os.ReadFile(destPath)
 	require.NoError(t, err)
 	assert.Equal(t, payload, written)
+}
+
+func Test_DownloadVerificationAgentBinary_WhenServerOmitsVersionHeader_ReturnsFallbackVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("binary"))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "", "", testutil.DiscardLogger())
+
+	downloadedVersion, err := client.DownloadVerificationAgentBinary(
+		t.Context(), "amd64", filepath.Join(t.TempDir(), "agent"), "v3.43.0",
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "v3.43.0", downloadedVersion)
+}
+
+func Test_DownloadVerificationAgentBinary_WhenCalled_SendsNoCacheRequestHeaders(t *testing.T) {
+	var requestHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestHeaders = r.Header.Clone()
+		_, _ = w.Write([]byte("binary"))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "", "", testutil.DiscardLogger())
+
+	_, err := client.DownloadVerificationAgentBinary(
+		t.Context(), "amd64", filepath.Join(t.TempDir(), "agent"), "v1.0.0",
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, "no-cache", requestHeaders.Get("Cache-Control"))
+	assert.Equal(t, "no-cache", requestHeaders.Get("Pragma"))
+}
+
+func Test_FetchServerVersion_WhenCalled_SendsNoCacheRequestHeaders(t *testing.T) {
+	var requestHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"v3.45.0"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "", "", testutil.DiscardLogger())
+
+	_, err := client.FetchServerVersion(t.Context())
+	require.NoError(t, err)
+
+	assert.Equal(t, "no-cache", requestHeaders.Get("Cache-Control"))
+	assert.Equal(t, "no-cache", requestHeaders.Get("Pragma"))
 }
 
 func Test_DownloadVerificationAgentBinary_WhenServer404_ReturnsError(t *testing.T) {
@@ -362,7 +421,9 @@ func Test_DownloadVerificationAgentBinary_WhenServer404_ReturnsError(t *testing.
 
 	client := NewClient(server.URL, "", "", testutil.DiscardLogger())
 
-	err := client.DownloadVerificationAgentBinary(t.Context(), "amd64", filepath.Join(t.TempDir(), "a"))
+	_, err := client.DownloadVerificationAgentBinary(
+		t.Context(), "amd64", filepath.Join(t.TempDir(), "a"), "v1.0.0",
+	)
 
 	require.Error(t, err)
 }
