@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -68,6 +69,7 @@ func NewClient(host, token, agentID string, log *slog.Logger) *Client {
 		AddRetryCondition(func(resp *resty.Response, err error) bool {
 			return err != nil || resp.StatusCode() >= 500
 		}).
+		SetHeaders(noCacheHeaders).
 		OnBeforeRequest(setAuth)
 
 	// Claim and report own their retry policy explicitly (claim: loop retries
@@ -75,6 +77,7 @@ func NewClient(host, token, agentID string, log *slog.Logger) *Client {
 	// would make "exactly N retries / give up at the budget" untestable.
 	noRetryClient := resty.New().
 		SetTimeout(apiCallTimeout).
+		SetHeaders(noCacheHeaders).
 		OnBeforeRequest(setAuth)
 
 	return &Client{
@@ -106,35 +109,45 @@ func (c *Client) FetchServerVersion(ctx context.Context) (string, error) {
 	return ver.Version, nil
 }
 
-func (c *Client) DownloadVerificationAgentBinary(ctx context.Context, arch, destPath string) error {
+func (c *Client) DownloadVerificationAgentBinary(
+	ctx context.Context,
+	arch, destPath, fallbackVersion string,
+) (string, error) {
 	requestURL := c.buildURL(verificationAgentBinaryPath) + "?" + url.Values{"arch": {arch}}.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return fmt.Errorf("create agent download request: %w", err)
+		return "", fmt.Errorf("create agent download request: %w", err)
 	}
 
 	c.setStreamHeaders(req)
 
 	resp, err := c.streamHTTP.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned %d for verification agent download", resp.StatusCode)
+		return "", fmt.Errorf("server returned %d for verification agent download", resp.StatusCode)
 	}
 
 	file, err := os.Create(destPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = file.Close() }()
 
-	_, err = io.Copy(file, resp.Body)
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		return "", err
+	}
 
-	return err
+	downloadedVersion := strings.TrimSpace(resp.Header.Get(agentVersionHeader))
+	if downloadedVersion == "" {
+		return fallbackVersion, nil
+	}
+
+	return downloadedVersion, nil
 }
 
 func (c *Client) Heartbeat(
@@ -286,6 +299,10 @@ func (c *Client) checkResponse(resp *resty.Response, method string) error {
 func (c *Client) setStreamHeaders(req *http.Request) {
 	if h := bearerHeader(c.token); h != "" {
 		req.Header.Set("Authorization", h)
+	}
+
+	for name, value := range noCacheHeaders {
+		req.Header.Set(name, value)
 	}
 }
 

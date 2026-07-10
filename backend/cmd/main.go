@@ -51,6 +51,7 @@ import (
 	verification_config "databasus-backend/internal/features/verification/config"
 	verification_runs "databasus-backend/internal/features/verification/runs"
 	workspaces_controllers "databasus-backend/internal/features/workspaces/controllers"
+	"databasus-backend/internal/middleware"
 	cache_utils "databasus-backend/internal/util/cache"
 	env_utils "databasus-backend/internal/util/env"
 	files_utils "databasus-backend/internal/util/files"
@@ -119,6 +120,7 @@ func main() {
 	ginApp := gin.New()
 	ginApp.Use(gin.Logger())
 	ginApp.Use(ginRecoveryWithLogger(log))
+	ginApp.Use(middleware.NoStoreCacheControl())
 
 	// Add GZIP compression middleware
 	ginApp.Use(gzip.Gzip(
@@ -211,8 +213,6 @@ func startServerWithGracefulShutdown(log *slog.Logger, app *gin.Engine) {
 
 func setUpRoutes(r *gin.Engine) {
 	v1 := r.Group("/api/v1")
-
-	v1.Use(noStoreCacheControl())
 
 	// Mount Swagger UI
 	v1.GET("/docs/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -435,17 +435,6 @@ func enableCors(ginApp *gin.Engine) {
 			},
 			AllowCredentials: true,
 		}))
-	}
-}
-
-// noStoreCacheControl marks every API response uncacheable. The API serves
-// only dynamic, often sensitive data (backup metadata, tokens, agent binaries,
-// version); a stale cached response — e.g. an outdated /system/version behind
-// a CDN — must never reach a client.
-func noStoreCacheControl() gin.HandlerFunc {
-	return func(ctx *gin.Context) {
-		ctx.Header("Cache-Control", "no-store")
-		ctx.Next()
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
+
+	system_version "databasus-backend/internal/features/system/version"
 )
 
 type AgentController struct{}
@@ -25,6 +27,7 @@ var verificationAgentBinaryPaths = map[string]string{
 // @Produce octet-stream
 // @Param arch query string true "Target architecture" Enums(amd64, arm64)
 // @Success 200 {file} binary
+// @Header 200 {string} X-Databasus-Version "Version the served binary was built from"
 // @Failure 400 {object} map[string]string
 // @Failure 404 {object} map[string]string
 // @Router /system/verification-agent [get]
@@ -42,5 +45,7 @@ func (c *AgentController) DownloadVerificationAgent(ctx *gin.Context) {
 
 	ctx.Header("Content-Type", "application/octet-stream")
 	ctx.Header("Content-Disposition", "attachment; filename=databasus-verification-agent")
+	ctx.Header(AgentVersionHeader, system_version.GetAppVersion())
+
 	ctx.File(binaryPath)
 }
