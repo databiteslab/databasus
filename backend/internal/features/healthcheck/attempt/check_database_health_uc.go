@@ -11,6 +11,7 @@ import (
 
 	"databasus-backend/internal/features/databases"
 	healthcheck_config "databasus-backend/internal/features/healthcheck/config"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/util/logger"
 )
 
@@ -234,22 +235,21 @@ func (uc *CheckDatabaseHealthUseCase) sendDbStatusNotification(
 		return
 	}
 
-	messageTitle := ""
-	messageBody := ""
+	notification := notifier_models.Notification{
+		Type:    notifier_models.NotificationTypeHealthcheckFailed,
+		Heading: fmt.Sprintf("❌ [%s] DB is unavailable", database.Name),
+		Message: fmt.Sprintf("❌ [%s] DB is currently unavailable", database.Name),
+	}
 
 	if newHealthStatus == databases.HealthStatusAvailable {
-		messageTitle = fmt.Sprintf("✅ [%s] DB is online", database.Name)
-		messageBody = fmt.Sprintf("✅ [%s] DB is back online", database.Name)
-	} else {
-		messageTitle = fmt.Sprintf("❌ [%s] DB is unavailable", database.Name)
-		messageBody = fmt.Sprintf("❌ [%s] DB is currently unavailable", database.Name)
+		notification = notifier_models.Notification{
+			Type:    notifier_models.NotificationTypeHealthcheckSuccess,
+			Heading: fmt.Sprintf("✅ [%s] DB is online", database.Name),
+			Message: fmt.Sprintf("✅ [%s] DB is back online", database.Name),
+		}
 	}
 
 	for _, notifier := range database.Notifiers {
-		uc.healthcheckAttemptSender.SendNotification(
-			&notifier,
-			messageTitle,
-			messageBody,
-		)
+		uc.healthcheckAttemptSender.SendNotification(&notifier, notification)
 	}
 }

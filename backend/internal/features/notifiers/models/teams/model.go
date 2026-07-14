@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/util/encryption"
 )
 
@@ -55,7 +56,7 @@ type payload struct {
 func (n *TeamsNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading, message string,
+	notification notifier_models.Notification,
 ) error {
 	if err := n.Validate(encryptor); err != nil {
 		return err
@@ -74,15 +75,15 @@ func (n *TeamsNotifier) Send(
 				"type":   "TextBlock",
 				"size":   "Medium",
 				"weight": "Bolder",
-				"text":   heading,
+				"text":   notification.Heading,
 			},
-			map[string]any{"type": "TextBlock", "wrap": true, "text": message},
+			map[string]any{"type": "TextBlock", "wrap": true, "text": notification.Message},
 		},
 	}
 
 	p := payload{
-		Title: heading,
-		Text:  message,
+		Title: notification.Heading,
+		Text:  notification.Message,
 		Attachments: []cardAttachment{
 			{ContentType: "application/vnd.microsoft.card.adaptive", Content: card},
 		},

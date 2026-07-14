@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/logger"
 	"databasus-backend/internal/util/testing/containers"
@@ -73,8 +74,11 @@ func Test_EmailNotifierSend_WhenSmtpServerAccepts_DeliversMessageToRecipient(t *
 	err := notifier.Send(
 		encryption.GetFieldEncryptor(),
 		logger.GetLogger(),
-		"Backup completed",
-		"<b>All good</b>",
+		notifier_models.Notification{
+			Type:    notifier_models.NotificationTypeAll,
+			Heading: "Backup completed",
+			Message: "<b>All good</b>",
+		},
 	)
 	require.NoError(t, err)
 

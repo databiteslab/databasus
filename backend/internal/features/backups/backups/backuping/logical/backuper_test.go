@@ -12,6 +12,7 @@ import (
 	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/features/storages"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
@@ -62,11 +63,10 @@ func Test_BackupExecuted_NotificationSent(t *testing.T) {
 		// Set up expectations
 		mockNotificationSender.On("SendNotification",
 			mock.Anything,
-			mock.MatchedBy(func(title string) bool {
-				return strings.Contains(title, "❌ Backup failed")
-			}),
-			mock.MatchedBy(func(message string) bool {
-				return strings.Contains(message, "backup failed")
+			mock.MatchedBy(func(notification notifier_models.Notification) bool {
+				return notification.Type == notifier_models.NotificationTypeBackupFailed &&
+					strings.Contains(notification.Heading, "❌ Backup failed") &&
+					strings.Contains(notification.Message, "backup failed")
 			}),
 		).Once()
 
@@ -95,11 +95,10 @@ func Test_BackupExecuted_NotificationSent(t *testing.T) {
 		// Set up expectations
 		mockNotificationSender.On("SendNotification",
 			mock.Anything,
-			mock.MatchedBy(func(title string) bool {
-				return strings.Contains(title, "✅ Backup completed")
-			}),
-			mock.MatchedBy(func(message string) bool {
-				return strings.Contains(message, "Backup completed successfully")
+			mock.MatchedBy(func(notification notifier_models.Notification) bool {
+				return notification.Type == notifier_models.NotificationTypeBackupSuccess &&
+					strings.Contains(notification.Heading, "✅ Backup completed") &&
+					strings.Contains(notification.Message, "Backup completed successfully")
 			}),
 		).Once()
 
@@ -127,17 +126,14 @@ func Test_BackupExecuted_NotificationSent(t *testing.T) {
 
 		// capture arguments
 		var capturedNotifier *notifiers.Notifier
-		var capturedTitle string
-		var capturedMessage string
+		var capturedNotification notifier_models.Notification
 
 		mockNotificationSender.On("SendNotification",
 			mock.Anything,
-			mock.AnythingOfType("string"),
-			mock.AnythingOfType("string"),
+			mock.AnythingOfType("notifier_models.Notification"),
 		).Run(func(args mock.Arguments) {
 			capturedNotifier = args.Get(0).(*notifiers.Notifier)
-			capturedTitle = args.Get(1).(string)
-			capturedMessage = args.Get(2).(string)
+			capturedNotification = args.Get(1).(notifier_models.Notification)
 		}).Once()
 
 		backuper.MakeBackup(backup.ID, true)
@@ -146,10 +142,11 @@ func Test_BackupExecuted_NotificationSent(t *testing.T) {
 		mockNotificationSender.AssertExpectations(t)
 
 		// Additional detailed assertions
-		assert.Contains(t, capturedTitle, "✅ Backup completed")
-		assert.Contains(t, capturedTitle, database.Name)
-		assert.Contains(t, capturedMessage, "Backup completed successfully")
-		assert.Contains(t, capturedMessage, "10.00 MB")
+		assert.Equal(t, notifier_models.NotificationTypeBackupSuccess, capturedNotification.Type)
+		assert.Contains(t, capturedNotification.Heading, "✅ Backup completed")
+		assert.Contains(t, capturedNotification.Heading, database.Name)
+		assert.Contains(t, capturedNotification.Message, "Backup completed successfully")
+		assert.Contains(t, capturedNotification.Message, "10.00 MB")
 		assert.Equal(t, notifier.ID, capturedNotifier.ID)
 	})
 }

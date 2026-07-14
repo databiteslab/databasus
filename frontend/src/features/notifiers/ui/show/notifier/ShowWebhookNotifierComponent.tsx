@@ -1,5 +1,9 @@
 import type { Notifier, WebhookHeader } from '../../../../../entity/notifiers';
 import { WebhookMethod } from '../../../../../entity/notifiers';
+import {
+  DEFAULT_ACCEPT_NOTIFICATION_TYPES,
+  NOTIFICATION_TYPE_LABELS,
+} from '../../../lib/notificationTypeLabels';
 
 interface Props {
   notifier: Notifier;
@@ -8,6 +12,9 @@ interface Props {
 export function ShowWebhookNotifierComponent({ notifier }: Props) {
   const headers = notifier?.webhookNotifier?.headers || [];
   const hasHeaders = headers.filter((h: WebhookHeader) => h.key).length > 0;
+
+  const acceptNotificationTypes =
+    notifier?.webhookNotifier?.acceptNotificationTypes || DEFAULT_ACCEPT_NOTIFICATION_TYPES;
 
   return (
     <>
@@ -19,6 +26,13 @@ export function ShowWebhookNotifierComponent({ notifier }: Props) {
       <div className="mt-1 mb-1 flex items-center">
         <div className="min-w-[110px]">Method</div>
         <div>{notifier?.webhookNotifier?.webhookMethod || '-'}</div>
+      </div>
+
+      <div className="mt-1 mb-1 flex items-center">
+        <div className="min-w-[110px]">Send on</div>
+        <div>
+          {acceptNotificationTypes.map((type) => NOTIFICATION_TYPE_LABELS[type]).join(', ') || '-'}
+        </div>
       </div>
 
       {hasHeaders && (

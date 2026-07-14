@@ -8,14 +8,14 @@ import (
 	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/features/storages"
 )
 
 type NotificationSender interface {
 	SendNotification(
 		notifier *notifiers.Notifier,
-		title string,
-		message string,
+		notification notifier_models.Notification,
 	)
 }
 

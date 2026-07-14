@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/util/encryption"
 )
 
@@ -64,8 +65,7 @@ func (e *EmailNotifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (e *EmailNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	_ *slog.Logger,
-	heading string,
-	message string,
+	notification notifier_models.Notification,
 ) error {
 	var smtpPassword string
 	if e.SMTPPassword != "" {
@@ -84,7 +84,7 @@ func (e *EmailNotifier) Send(
 		}
 	}
 
-	emailContent := e.buildEmailContent(heading, message, from)
+	emailContent := e.buildEmailContent(notification.Heading, notification.Message, from)
 	isAuthRequired := e.SMTPUser != "" && smtpPassword != ""
 
 	if e.SMTPPort == ImplicitTLSPort {

@@ -15,6 +15,7 @@ import (
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/intervals"
 	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/features/storages"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
@@ -56,9 +57,8 @@ func (e *fakeIncrementalExecutor) Execute(
 }
 
 type sentNotification struct {
-	Notifier *notifiers.Notifier
-	Title    string
-	Message  string
+	Notifier     *notifiers.Notifier
+	Notification notifier_models.Notification
 }
 
 // recordingNotificationSender captures every dispatched notification so tests
@@ -69,13 +69,11 @@ type recordingNotificationSender struct {
 
 func (s *recordingNotificationSender) SendNotification(
 	notifier *notifiers.Notifier,
-	title string,
-	message string,
+	notification notifier_models.Notification,
 ) {
 	s.sentNotifications = append(s.sentNotifications, sentNotification{
-		Notifier: notifier,
-		Title:    title,
-		Message:  message,
+		Notifier:     notifier,
+		Notification: notification,
 	})
 }
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/util/encryption"
 )
 
@@ -49,17 +50,17 @@ func (s *SlackNotifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (s *SlackNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading, message string,
+	notification notifier_models.Notification,
 ) error {
 	botToken, err := encryptor.Decrypt(s.BotToken)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt bot token: %w", err)
 	}
 
-	full := fmt.Sprintf("*%s*", heading)
+	full := fmt.Sprintf("*%s*", notification.Heading)
 
-	if message != "" {
-		full = fmt.Sprintf("%s\n\n%s", full, message)
+	if notification.Message != "" {
+		full = fmt.Sprintf("%s\n\n%s", full, notification.Message)
 	}
 
 	payload, _ := json.Marshal(map[string]any{

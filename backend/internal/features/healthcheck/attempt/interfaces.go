@@ -5,13 +5,13 @@ import (
 
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 )
 
 type HealthcheckAttemptSender interface {
 	SendNotification(
 		notifier *notifiers.Notifier,
-		title string,
-		message string,
+		notification notifier_models.Notification,
 	)
 }
 

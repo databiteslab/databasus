@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	discord_notifier "databasus-backend/internal/features/notifiers/models/discord"
 	"databasus-backend/internal/features/notifiers/models/email_notifier"
 	slack_notifier "databasus-backend/internal/features/notifiers/models/slack"
@@ -46,10 +47,9 @@ func (n *Notifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (n *Notifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading string,
-	message string,
+	notification notifier_models.Notification,
 ) error {
-	err := n.getSpecificNotifier().Send(encryptor, logger, heading, message)
+	err := n.getSpecificNotifier().Send(encryptor, logger, notification)
 
 	if err != nil {
 		lastSendError := err.Error()

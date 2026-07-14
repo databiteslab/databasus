@@ -15,6 +15,7 @@ import (
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/intervals"
 	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/features/storages"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
@@ -26,9 +27,8 @@ import (
 )
 
 type recordedNotification struct {
-	notifier *notifiers.Notifier
-	title    string
-	message  string
+	notifier     *notifiers.Notifier
+	notification notifier_models.Notification
 }
 
 type recordingNotificationSender struct {
@@ -43,11 +43,10 @@ func newRecordingNotificationSender() *recordingNotificationSender {
 
 func (s *recordingNotificationSender) SendNotification(
 	notifier *notifiers.Notifier,
-	title string,
-	message string,
+	notification notifier_models.Notification,
 ) {
 	s.mu.Lock()
-	s.recorded = append(s.recorded, recordedNotification{notifier, title, message})
+	s.recorded = append(s.recorded, recordedNotification{notifier, notification})
 	s.mu.Unlock()
 
 	s.notifyCh <- struct{}{}
@@ -160,9 +159,11 @@ func Test_SubmitReport_WhenBackupRejected_SendsFailureNotification(t *testing.T)
 	sent := recorder.waitForNotification(t, 2*time.Second)
 	require.NotNil(t, sent.notifier)
 	assert.Equal(t, notifier.ID, sent.notifier.ID, "must dispatch to the database's notifier")
-	assert.Contains(t, sent.title, database.Name, "title must name the database")
-	assert.Contains(t, sent.title, "failed", "title must convey failure")
-	assert.Contains(t, sent.message, failMessage, "notification body must include the agent's diagnostic")
+	assert.Equal(t, notifier_models.NotificationTypeVerificationFailed, sent.notification.Type)
+	assert.Contains(t, sent.notification.Heading, database.Name, "title must name the database")
+	assert.Contains(t, sent.notification.Heading, "failed", "title must convey failure")
+	assert.Contains(t, sent.notification.Message, failMessage,
+		"notification body must include the agent's diagnostic")
 }
 
 func Test_SubmitReport_WhenRestoredTooSmall_SendsFailureNotification(t *testing.T) {
@@ -210,8 +211,10 @@ func Test_SubmitReport_WhenRestoredTooSmall_SendsFailureNotification(t *testing.
 	sent := recorder.waitForNotification(t, 2*time.Second)
 	require.NotNil(t, sent.notifier)
 	assert.Equal(t, notifier.ID, sent.notifier.ID)
-	assert.Contains(t, sent.title, "failed", "size-guard terminal must be reported as a failure")
-	assert.Contains(t, sent.message, "less than 20%", "notification body must explain why the restore was rejected")
+	assert.Equal(t, notifier_models.NotificationTypeVerificationFailed, sent.notification.Type)
+	assert.Contains(t, sent.notification.Heading, "failed", "size-guard terminal must be reported as a failure")
+	assert.Contains(t, sent.notification.Message, "less than 20%",
+		"notification body must explain why the restore was rejected")
 }
 
 func Test_SubmitReport_WhenAgentSetupFailedRepeatedly_SendsFailureNotificationOnlyAtTerminal(t *testing.T) {
@@ -272,7 +275,8 @@ func Test_SubmitReport_WhenAgentSetupFailedRepeatedly_SendsFailureNotificationOn
 
 	sent := recorder.waitForNotification(t, 2*time.Second)
 	assert.Equal(t, notifier.ID, sent.notifier.ID)
-	assert.Contains(t, sent.title, "failed")
+	assert.Equal(t, notifier_models.NotificationTypeVerificationFailed, sent.notification.Type)
+	assert.Contains(t, sent.notification.Heading, "failed")
 	assert.Equal(t, 1, recorder.count(), "exactly one notification on terminal — not one per attempt")
 }
 
@@ -330,8 +334,9 @@ func Test_ReapStaleRuns_WhenAgentLostContact_SendsFailureNotificationOnlyAtTermi
 
 	sent := recorder.waitForNotification(t, 2*time.Second)
 	assert.Equal(t, notifier.ID, sent.notifier.ID)
-	assert.Contains(t, sent.title, "failed")
-	assert.Contains(t, sent.message, "agent went silent")
+	assert.Equal(t, notifier_models.NotificationTypeVerificationFailed, sent.notification.Type)
+	assert.Contains(t, sent.notification.Heading, "failed")
+	assert.Contains(t, sent.notification.Message, "agent went silent")
 
 	final := GetVerificationByIDViaAPI(t, router, owner.Token, enqueued.ID)
 	assert.Equal(t, VerificationStatusFailed, final.Status)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/util/encryption"
 )
 
@@ -35,17 +36,16 @@ func (d *DiscordNotifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (d *DiscordNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading string,
-	message string,
+	notification notifier_models.Notification,
 ) error {
 	webhookURL, err := encryptor.Decrypt(d.ChannelWebhookURL)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt webhook URL: %w", err)
 	}
 
-	fullMessage := heading
-	if message != "" {
-		fullMessage = fmt.Sprintf("%s\n\n%s", heading, message)
+	fullMessage := notification.Heading
+	if notification.Message != "" {
+		fullMessage = fmt.Sprintf("%s\n\n%s", notification.Heading, notification.Message)
 	}
 
 	payload := map[string]any{

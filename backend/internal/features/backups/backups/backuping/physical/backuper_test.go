@@ -18,6 +18,7 @@ import (
 	backups_config_physical "databasus-backend/internal/features/backups/config/physical"
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
 	"databasus-backend/internal/storage"
 	"databasus-backend/internal/util/logger"
@@ -413,7 +414,8 @@ func Test_SendFullBackupNotification_WhenEnabled_FansOutToAllNotifiers(t *testin
 	}
 	assert.Contains(t, notifiedIDs, firstNotifierID)
 	assert.Contains(t, notifiedIDs, secondNotifierID)
-	assert.Contains(t, sender.sentNotifications[0].Title, "completed")
+	assert.Contains(t, sender.sentNotifications[0].Notification.Heading, "completed")
+	assert.Equal(t, notifier_models.NotificationTypeBackupSuccess, sender.sentNotifications[0].Notification.Type)
 }
 
 func Test_LoadBackupContext_WhenNotEncrypted_LeavesMasterKeyEmpty(t *testing.T) {
@@ -551,7 +553,8 @@ func Test_RunFullBackup_WhenExecutorResultErrorStatus_PersistsErrorAndSendsFaile
 	assert.Equal(t, physical_enums.PhysicalBackupStatusError, persisted.Status)
 
 	require.Len(t, sender.sentNotifications, 1)
-	assert.Contains(t, sender.sentNotifications[0].Title, "failed")
+	assert.Contains(t, sender.sentNotifications[0].Notification.Heading, "failed")
+	assert.Equal(t, notifier_models.NotificationTypeBackupFailed, sender.sentNotifications[0].Notification.Type)
 }
 
 func Test_RunFullBackup_WhenExecutorResultChainBroken_PersistsChainBrokenAndSendsChainBrokenNotification(t *testing.T) {
@@ -573,7 +576,8 @@ func Test_RunFullBackup_WhenExecutorResultChainBroken_PersistsChainBrokenAndSend
 	assert.Equal(t, physical_enums.PhysicalBackupStatusChainBroken, persisted.Status)
 
 	require.Len(t, sender.sentNotifications, 1)
-	assert.Contains(t, sender.sentNotifications[0].Title, "chain-broken")
+	assert.Contains(t, sender.sentNotifications[0].Notification.Heading, "chain-broken")
+	assert.Equal(t, notifier_models.NotificationTypeBackupFailed, sender.sentNotifications[0].Notification.Type)
 }
 
 func Test_RunIncrementalBackup_WhenParentManifestMissing_FlipsToChainBrokenBeforeExecutor(t *testing.T) {
@@ -622,7 +626,8 @@ func Test_RunIncrementalBackup_WhenExecutorResultErrorStatus_PersistsErrorAndSen
 	assert.Equal(t, physical_enums.PhysicalBackupStatusError, persisted.Status)
 
 	require.Len(t, sender.sentNotifications, 1)
-	assert.Contains(t, sender.sentNotifications[0].Title, "INCR failed")
+	assert.Contains(t, sender.sentNotifications[0].Notification.Heading, "INCR failed")
+	assert.Equal(t, notifier_models.NotificationTypeBackupFailed, sender.sentNotifications[0].Notification.Type)
 }
 
 func Test_ReleaseOwned_WhenForeignBackupHoldsClaim_LeavesItIntact(t *testing.T) {

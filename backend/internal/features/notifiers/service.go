@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	audit_logs "databasus-backend/internal/features/audit_logs"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	users_models "databasus-backend/internal/features/users/models"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
 	"databasus-backend/internal/util/encryption"
@@ -223,7 +224,7 @@ func (s *NotifierService) SendTestNotification(
 		return ErrInsufficientPermissionsToTestNotifier
 	}
 
-	err = notifier.Send(s.fieldEncryptor, s.logger, "Test message", "This is a test message")
+	err = notifier.Send(s.fieldEncryptor, s.logger, newTestNotification())
 	if err != nil {
 		return err
 	}
@@ -270,18 +271,24 @@ func (s *NotifierService) SendTestNotificationToNotifier(
 		usingNotifier = notifier
 	}
 
-	return usingNotifier.Send(s.fieldEncryptor, s.logger, "Test message", "This is a test message")
+	return usingNotifier.Send(s.fieldEncryptor, s.logger, newTestNotification())
+}
+
+func newTestNotification() notifier_models.Notification {
+	return notifier_models.Notification{
+		Type:    notifier_models.NotificationTypeAll,
+		Heading: "Test message",
+		Message: "This is a test message",
+	}
 }
 
 func (s *NotifierService) SendNotification(
 	notifier *Notifier,
-	title string,
-	message string,
+	notification notifier_models.Notification,
 ) {
-	// Truncate message to 2000 characters if it's too long
-	messageRunes := []rune(message)
+	messageRunes := []rune(notification.Message)
 	if len(messageRunes) > 2000 {
-		message = string(messageRunes[:2000])
+		notification.Message = string(messageRunes[:2000])
 	}
 
 	notifiedFromDb, err := s.notifierRepository.FindByID(notifier.ID)
@@ -289,7 +296,7 @@ func (s *NotifierService) SendNotification(
 		return
 	}
 
-	err = notifiedFromDb.Send(s.fieldEncryptor, s.logger, title, message)
+	err = notifiedFromDb.Send(s.fieldEncryptor, s.logger, notification)
 	if err != nil {
 		errMsg := err.Error()
 		notifiedFromDb.LastSendError = &errMsg

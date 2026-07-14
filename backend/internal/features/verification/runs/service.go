@@ -15,6 +15,7 @@ import (
 	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
 	backups_services "databasus-backend/internal/features/backups/backups/services"
 	"databasus-backend/internal/features/databases"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	users_models "databasus-backend/internal/features/users/models"
 	verification_agents "databasus-backend/internal/features/verification/agents"
 	verification_config "databasus-backend/internal/features/verification/config"
@@ -691,9 +692,20 @@ func (s *VerificationService) notifyTerminal(
 
 	title, body := buildNotificationCopy(verification, database, terminalStatus, failMessage)
 
+	sentNotificationType := notifier_models.NotificationTypeVerificationSuccess
+	if wantedType == verification_config.NotificationVerificationFailed {
+		sentNotificationType = notifier_models.NotificationTypeVerificationFailed
+	}
+
+	notification := notifier_models.Notification{
+		Type:    sentNotificationType,
+		Heading: title,
+		Message: body,
+	}
+
 	for i := range database.Notifiers {
 		notifier := database.Notifiers[i]
-		go s.notifierService.SendNotification(&notifier, title, body)
+		go s.notifierService.SendNotification(&notifier, notification)
 	}
 }
 

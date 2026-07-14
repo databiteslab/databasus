@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/util/encryption"
 )
 
@@ -59,17 +60,16 @@ func (t *TelegramNotifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (t *TelegramNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading string,
-	message string,
+	notification notifier_models.Notification,
 ) error {
 	botToken, err := encryptor.Decrypt(t.BotToken)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt bot token: %w", err)
 	}
 
-	fullMessage := heading
-	if message != "" {
-		fullMessage = fmt.Sprintf("%s\n\n%s", heading, message)
+	fullMessage := notification.Heading
+	if notification.Message != "" {
+		fullMessage = fmt.Sprintf("%s\n\n%s", notification.Heading, notification.Message)
 	}
 
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)

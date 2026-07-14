@@ -16,6 +16,7 @@ import (
 	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
 	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
 	"databasus-backend/internal/features/databases"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/features/storages"
 	tasks_cancellation "databasus-backend/internal/features/tasks/cancellation"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
@@ -300,8 +301,11 @@ func (b *Backuper) SendBackupNotification(
 		}
 
 		title := ""
+		sentNotificationType := notifier_models.NotificationTypeBackupSuccess
+
 		switch notificationType {
 		case backups_config_logical.NotificationBackupFailed:
+			sentNotificationType = notifier_models.NotificationTypeBackupFailed
 			title = fmt.Sprintf(
 				"❌ Backup failed for database \"%s\" (workspace \"%s\")",
 				database.Name,
@@ -343,8 +347,11 @@ func (b *Backuper) SendBackupNotification(
 
 		b.notificationSender.SendNotification(
 			&notifier,
-			title,
-			message,
+			notifier_models.Notification{
+				Type:    sentNotificationType,
+				Heading: title,
+				Message: message,
+			},
 		)
 	}
 }

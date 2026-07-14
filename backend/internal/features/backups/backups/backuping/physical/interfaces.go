@@ -5,10 +5,11 @@ import (
 
 	postgresql_executor "databasus-backend/internal/features/backups/backups/usecases/physical/postgresql"
 	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 )
 
 type NotificationSender interface {
-	SendNotification(notifier *notifiers.Notifier, title, message string)
+	SendNotification(notifier *notifiers.Notifier, notification notifier_models.Notification)
 }
 
 type FullBackupExecutor interface {
