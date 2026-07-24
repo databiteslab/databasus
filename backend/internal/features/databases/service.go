@@ -7,18 +7,21 @@ import (
 	"log/slog"
 	"time"
 
-	"databasus-backend/internal/config"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"gorm.io/gorm"
+
 	audit_logs "databasus-backend/internal/features/audit_logs"
+	physical_core_service "databasus-backend/internal/features/backups/backups/core/physical/service"
 	"databasus-backend/internal/features/databases/databases/mariadb"
 	"databasus-backend/internal/features/databases/databases/mongodb"
 	"databasus-backend/internal/features/databases/databases/mysql"
-	"databasus-backend/internal/features/databases/databases/postgresql"
+	postgresql_logical "databasus-backend/internal/features/databases/databases/postgresql/logical"
+	postgresql_physical "databasus-backend/internal/features/databases/databases/postgresql/physical"
 	"databasus-backend/internal/features/notifiers"
 	users_models "databasus-backend/internal/features/users/models"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
 	"databasus-backend/internal/util/encryption"
-
-	"github.com/google/uuid"
 )
 
 type DatabaseService struct {
@@ -30,9 +33,10 @@ type DatabaseService struct {
 	dbRemoveListener   []DatabaseRemoveListener
 	dbCopyListener     []DatabaseCopyListener
 
-	workspaceService *workspaces_services.WorkspaceService
-	auditLogService  *audit_logs.AuditLogService
-	fieldEncryptor   encryption.FieldEncryptor
+	workspaceService      *workspaces_services.WorkspaceService
+	auditLogService       *audit_logs.AuditLogService
+	fieldEncryptor        encryption.FieldEncryptor
+	physicalBackupService *physical_core_service.PhysicalBackupService
 }
 
 func (s *DatabaseService) AddDbCreationListener(
@@ -87,21 +91,8 @@ func (s *DatabaseService) CreateDatabase(
 		return nil, fmt.Errorf("failed to auto-detect database data: %w", err)
 	}
 
-	if config.GetEnv().IsCloud {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		isReadOnly, permissions, err := database.IsUserReadOnly(ctx, s.logger, s.fieldEncryptor)
-		if err != nil {
-			return nil, fmt.Errorf("failed to verify user permissions: %w", err)
-		}
-
-		if !isReadOnly {
-			return nil, fmt.Errorf(
-				"in cloud mode, only read-only database users are allowed (user has permissions: %v)",
-				permissions,
-			)
-		}
+	if err := database.TestConnection(s.logger, s.fieldEncryptor); err != nil {
+		return nil, err
 	}
 
 	if err := database.EncryptSensitiveFields(s.fieldEncryptor); err != nil {
@@ -171,25 +162,8 @@ func (s *DatabaseService) UpdateDatabase(
 		return fmt.Errorf("failed to auto-detect database data: %w", err)
 	}
 
-	if config.GetEnv().IsCloud {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		isReadOnly, permissions, err := existingDatabase.IsUserReadOnly(
-			ctx,
-			s.logger,
-			s.fieldEncryptor,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to verify user permissions: %w", err)
-		}
-
-		if !isReadOnly {
-			return fmt.Errorf(
-				"in cloud mode, only read-only database users are allowed (user has permissions: %v)",
-				permissions,
-			)
-		}
+	if err := existingDatabase.TestConnection(s.logger, s.fieldEncryptor); err != nil {
+		return err
 	}
 
 	oldName := existingDatabase.Name
@@ -260,6 +234,57 @@ func (s *DatabaseService) DeleteDatabase(
 	return s.dbRepository.Delete(id)
 }
 
+// DeleteForTest removes a database row through the listener chain without
+// permission checks or audit logging. The path matters because listeners
+// own external cleanup (backup rows, replication slots on source PG); tests
+// that DELETE'd through raw SQL used to leak those resources.
+//
+// Idempotent: a missing row is treated as success so a test that already
+// deleted the database through the public API does not crash on the fixture's
+// teardown re-delete.
+// DeleteForTest removes a database and its dependent rows during test teardown. Under the
+// parallel test suite (go test -p=N) the cascade can deadlock against a concurrent writer in
+// the same process (a backup scheduler still settling), surfacing as SQLSTATE 40P01. The
+// aborted transaction is transient, so the whole delete — idempotent on a re-run — is retried.
+func (s *DatabaseService) DeleteForTest(id uuid.UUID) error {
+	const maxAttempts = 5
+
+	deleteOnce := func() error {
+		for _, listener := range s.dbRemoveListener {
+			if err := listener.OnBeforeDatabaseRemove(id); err != nil {
+				return err
+			}
+		}
+
+		if err := s.dbRepository.Delete(id); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		return nil
+	}
+
+	var err error
+	for attempt := range maxAttempts {
+		err = deleteOnce()
+		if err == nil || !isTransientSerializationError(err) {
+			return err
+		}
+
+		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+	}
+
+	return err
+}
+
+// isTransientSerializationError reports whether err is a PostgreSQL deadlock (40P01) or
+// serialization failure (40001) — both transient, where retrying the aborted transaction is
+// the correct response rather than failing.
+func isTransientSerializationError(err error) bool {
+	var pgErr *pgconn.PgError
+
+	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "40001")
+}
+
 func (s *DatabaseService) GetDatabase(
 	user *users_models.User,
 	id uuid.UUID,
@@ -305,6 +330,8 @@ func (s *DatabaseService) GetDatabasesByWorkspace(
 	for _, database := range databases {
 		database.HideSensitiveData()
 	}
+
+	s.fillPhysicalLastBackupTimes(databases)
 
 	return databases, nil
 }
@@ -379,28 +406,9 @@ func (s *DatabaseService) TestDatabaseConnection(
 func (s *DatabaseService) TestDatabaseConnectionDirect(
 	database *Database,
 ) error {
-	var usingDatabase *Database
-
-	if database.ID != uuid.Nil {
-		existingDatabase, err := s.dbRepository.FindByID(database.ID)
-		if err != nil {
-			return err
-		}
-
-		if database.WorkspaceID != nil && existingDatabase.WorkspaceID != nil &&
-			*existingDatabase.WorkspaceID != *database.WorkspaceID {
-			return errors.New("database does not belong to this workspace")
-		}
-
-		existingDatabase.Update(database)
-
-		if err := existingDatabase.Validate(); err != nil {
-			return err
-		}
-
-		usingDatabase = existingDatabase
-	} else {
-		usingDatabase = database
+	usingDatabase, err := s.resolveConnectionTarget(database)
+	if err != nil {
+		return err
 	}
 
 	return usingDatabase.TestConnection(s.logger, s.fieldEncryptor)
@@ -480,20 +488,40 @@ func (s *DatabaseService) CopyDatabase(
 	}
 
 	switch existingDatabase.Type {
-	case DatabaseTypePostgres:
-		if existingDatabase.Postgresql != nil {
-			newDatabase.Postgresql = &postgresql.PostgresqlDatabase{
+	case DatabaseTypePostgresLogical:
+		if existingDatabase.PostgresqlLogical != nil {
+			newDatabase.PostgresqlLogical = &postgresql_logical.PostgresqlLogicalDatabase{
 				ID:             uuid.Nil,
 				DatabaseID:     nil,
-				Version:        existingDatabase.Postgresql.Version,
-				Host:           existingDatabase.Postgresql.Host,
-				Port:           existingDatabase.Postgresql.Port,
-				Username:       existingDatabase.Postgresql.Username,
-				Password:       existingDatabase.Postgresql.Password,
-				Database:       existingDatabase.Postgresql.Database,
-				IsHttps:        existingDatabase.Postgresql.IsHttps,
-				IncludeSchemas: existingDatabase.Postgresql.IncludeSchemas,
-				CpuCount:       existingDatabase.Postgresql.CpuCount,
+				Version:        existingDatabase.PostgresqlLogical.Version,
+				Host:           existingDatabase.PostgresqlLogical.Host,
+				Port:           existingDatabase.PostgresqlLogical.Port,
+				Username:       existingDatabase.PostgresqlLogical.Username,
+				Password:       existingDatabase.PostgresqlLogical.Password,
+				Database:       existingDatabase.PostgresqlLogical.Database,
+				SslMode:        existingDatabase.PostgresqlLogical.SslMode,
+				SslClientCert:  existingDatabase.PostgresqlLogical.SslClientCert,
+				SslClientKey:   existingDatabase.PostgresqlLogical.SslClientKey,
+				SslRootCert:    existingDatabase.PostgresqlLogical.SslRootCert,
+				IncludeSchemas: existingDatabase.PostgresqlLogical.IncludeSchemas,
+				CpuCount:       existingDatabase.PostgresqlLogical.CpuCount,
+			}
+		}
+	case DatabaseTypePostgresPhysical:
+		if existingDatabase.PostgresqlPhysical != nil {
+			newDatabase.PostgresqlPhysical = &postgresql_physical.PostgresqlPhysicalDatabase{
+				ID:            uuid.Nil,
+				DatabaseID:    nil,
+				Version:       existingDatabase.PostgresqlPhysical.Version,
+				BackupType:    existingDatabase.PostgresqlPhysical.BackupType,
+				Host:          existingDatabase.PostgresqlPhysical.Host,
+				Port:          existingDatabase.PostgresqlPhysical.Port,
+				Username:      existingDatabase.PostgresqlPhysical.Username,
+				Password:      existingDatabase.PostgresqlPhysical.Password,
+				SslMode:       existingDatabase.PostgresqlPhysical.SslMode,
+				SslClientCert: existingDatabase.PostgresqlPhysical.SslClientCert,
+				SslClientKey:  existingDatabase.PostgresqlPhysical.SslClientKey,
+				SslRootCert:   existingDatabase.PostgresqlPhysical.SslRootCert,
 			}
 		}
 	case DatabaseTypeMysql:
@@ -771,21 +799,21 @@ func (s *DatabaseService) CreateReadOnlyUser(
 	var err error
 
 	switch usingDatabase.Type {
-	case DatabaseTypePostgres:
-		username, password, err = usingDatabase.Postgresql.CreateReadOnlyUser(
-			ctx, s.logger, s.fieldEncryptor, usingDatabase.ID,
+	case DatabaseTypePostgresLogical:
+		username, password, err = usingDatabase.PostgresqlLogical.CreateReadOnlyUser(
+			ctx, s.logger, s.fieldEncryptor,
 		)
 	case DatabaseTypeMysql:
 		username, password, err = usingDatabase.Mysql.CreateReadOnlyUser(
-			ctx, s.logger, s.fieldEncryptor, usingDatabase.ID,
+			ctx, s.logger, s.fieldEncryptor,
 		)
 	case DatabaseTypeMariadb:
 		username, password, err = usingDatabase.Mariadb.CreateReadOnlyUser(
-			ctx, s.logger, s.fieldEncryptor, usingDatabase.ID,
+			ctx, s.logger, s.fieldEncryptor,
 		)
 	case DatabaseTypeMongodb:
 		username, password, err = usingDatabase.Mongodb.CreateReadOnlyUser(
-			ctx, s.logger, s.fieldEncryptor, usingDatabase.ID,
+			ctx, s.logger, s.fieldEncryptor,
 		)
 	default:
 		return "", "", errors.New("read-only user creation not supported for this database type")
@@ -808,4 +836,145 @@ func (s *DatabaseService) CreateReadOnlyUser(
 	}
 
 	return username, password, nil
+}
+
+func (s *DatabaseService) CreateReplicationOnlyUser(
+	user *users_models.User,
+	database *Database,
+) (string, string, error) {
+	var usingDatabase *Database
+
+	if database.ID != uuid.Nil {
+		existingDatabase, err := s.dbRepository.FindByID(database.ID)
+		if err != nil {
+			return "", "", err
+		}
+
+		if existingDatabase.WorkspaceID == nil {
+			return "", "", errors.New("cannot create user for database without workspace")
+		}
+
+		canManage, err := s.workspaceService.CanUserManageDBs(*existingDatabase.WorkspaceID, user)
+		if err != nil {
+			return "", "", err
+		}
+		if !canManage {
+			return "", "", errors.New("insufficient permissions to manage this database")
+		}
+
+		if database.WorkspaceID != nil && *existingDatabase.WorkspaceID != *database.WorkspaceID {
+			return "", "", errors.New("database does not belong to this workspace")
+		}
+
+		existingDatabase.Update(database)
+
+		if err := existingDatabase.Validate(); err != nil {
+			return "", "", err
+		}
+
+		usingDatabase = existingDatabase
+	} else {
+		if database.WorkspaceID != nil {
+			canManage, err := s.workspaceService.CanUserManageDBs(*database.WorkspaceID, user)
+			if err != nil {
+				return "", "", err
+			}
+			if !canManage {
+				return "", "", errors.New("insufficient permissions to manage this workspace")
+			}
+		}
+
+		usingDatabase = database
+	}
+
+	if usingDatabase.Type != DatabaseTypePostgresPhysical {
+		return "", "", errors.New(
+			"replication-only user creation is only supported for POSTGRES_PHYSICAL databases",
+		)
+	}
+
+	if usingDatabase.PostgresqlPhysical == nil {
+		return "", "", errors.New("physical database details are missing")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	username, password, err := usingDatabase.PostgresqlPhysical.CreateReplicationOnlyUser(
+		ctx, s.logger, s.fieldEncryptor,
+	)
+	if err != nil {
+		return "", "", err
+	}
+
+	if usingDatabase.WorkspaceID != nil {
+		s.auditLogService.WriteAuditLog(
+			fmt.Sprintf(
+				"Replication-only user created for database: %s (username: %s)",
+				usingDatabase.Name,
+				username,
+			),
+			&user.ID,
+			usingDatabase.WorkspaceID,
+		)
+	}
+
+	return username, password, nil
+}
+
+// resolveConnectionTarget merges an unsaved request over the persisted database
+// when an ID is supplied, so a connection test uses the same merge rules as save.
+// fillPhysicalLastBackupTimes populates LastBackupTime for physical databases,
+// whose backups (FULL / INCREMENTAL / WAL) live outside the databases table and so
+// are not denormalized onto the row the way logical backups are. A failure here is
+// non-fatal: the list must still render, just without the last-backup decoration.
+func (s *DatabaseService) fillPhysicalLastBackupTimes(databases []*Database) {
+	var physicalDatabaseIDs []uuid.UUID
+
+	for _, database := range databases {
+		if database.Type == DatabaseTypePostgresPhysical {
+			physicalDatabaseIDs = append(physicalDatabaseIDs, database.ID)
+		}
+	}
+
+	if len(physicalDatabaseIDs) == 0 {
+		return
+	}
+
+	lastBackupTimes, err := s.physicalBackupService.GetLastBackupTimesByDatabaseIDs(physicalDatabaseIDs)
+	if err != nil {
+		s.logger.Error("failed to load physical last backup times", "error", err)
+
+		return
+	}
+
+	for _, database := range databases {
+		if lastBackupTime, hasBackup := lastBackupTimes[database.ID]; hasBackup {
+			database.LastBackupTime = &lastBackupTime
+		}
+	}
+}
+
+func (s *DatabaseService) resolveConnectionTarget(database *Database) (*Database, error) {
+	if database.ID == uuid.Nil {
+		return database, nil
+	}
+
+	existingDatabase, err := s.dbRepository.FindByID(database.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if database.WorkspaceID != nil && existingDatabase.WorkspaceID != nil &&
+		*existingDatabase.WorkspaceID != *database.WorkspaceID {
+		return nil, errors.New("database does not belong to this workspace")
+	}
+
+	existingDatabase.Update(database)
+
+	if err := existingDatabase.Validate(); err != nil {
+		return nil, err
+	}
+
+	return existingDatabase, nil
 }

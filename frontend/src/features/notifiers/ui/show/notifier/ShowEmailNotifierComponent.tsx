@@ -36,6 +36,13 @@ export function ShowEmailNotifierComponent({ notifier }: Props) {
         <div className="min-w-[110px]">From</div>
         {notifier?.emailNotifier?.from || '(auto)'}
       </div>
+
+      {notifier?.emailNotifier?.isInsecureSkipVerify && (
+        <div className="mb-1 flex items-center">
+          <div className="min-w-[110px]">Skip TLS</div>
+          Enabled
+        </div>
+      )}
     </>
   );
 }

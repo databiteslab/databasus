@@ -1,6 +1,7 @@
 export { notifierApi } from './api/notifierApi';
 export type { Notifier } from './models/Notifier';
 export { NotifierType } from './models/NotifierType';
+export { NotificationType } from './models/NotificationType';
 
 export type { EmailNotifier } from './models/email/EmailNotifier';
 export { validateEmailNotifier } from './models/email/validateEmailNotifier';

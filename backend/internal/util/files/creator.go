@@ -6,7 +6,7 @@ import (
 )
 
 func EnsureDirectories(directories []string) error {
-	const directoryPermissions = 0755
+	const directoryPermissions = 0o755
 
 	for _, directory := range directories {
 		if _, err := os.Stat(directory); os.IsNotExist(err) {

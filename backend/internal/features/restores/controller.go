@@ -1,12 +1,13 @@
 package restores
 
 import (
-	restores_core "databasus-backend/internal/features/restores/core"
-	users_middleware "databasus-backend/internal/features/users/middleware"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	restores_core "databasus-backend/internal/features/restores/core"
+	users_middleware "databasus-backend/internal/features/users/middleware"
 )
 
 type RestoreController struct {

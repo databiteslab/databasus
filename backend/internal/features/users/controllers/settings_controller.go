@@ -3,12 +3,12 @@ package users_controllers
 import (
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	user_enums "databasus-backend/internal/features/users/enums"
 	user_middleware "databasus-backend/internal/features/users/middleware"
 	user_models "databasus-backend/internal/features/users/models"
 	users_services "databasus-backend/internal/features/users/services"
-
-	"github.com/gin-gonic/gin"
 )
 
 type SettingsController struct {

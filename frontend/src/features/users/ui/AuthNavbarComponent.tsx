@@ -24,6 +24,15 @@ export function AuthNavbarComponent() {
       <div className="mr-3 ml-auto hidden items-center gap-5 sm:flex">
         <a
           className="!text-black hover:opacity-80 dark:!text-gray-200"
+          href="https://databasus.com/installation"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Docs
+        </a>
+
+        <a
+          className="!text-black hover:opacity-80 dark:!text-gray-200"
           href="https://t.me/databasus_community"
           target="_blank"
           rel="noreferrer"

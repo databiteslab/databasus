@@ -7,15 +7,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"golang.org/x/oauth2"
+
 	users_dto "databasus-backend/internal/features/users/dto"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_services "databasus-backend/internal/features/users/services"
 	users_testing "databasus-backend/internal/features/users/testing"
 	test_utils "databasus-backend/internal/util/testing"
-
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-	"golang.org/x/oauth2"
 )
 
 func Test_SignUpUser_WithValidData_UserCreated(t *testing.T) {

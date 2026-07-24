@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react';
 import { BrowserRouter, Route } from 'react-router';
 import { Routes } from 'react-router';
 
+import { useVersionCheck } from './shared/hooks/useVersionCheck';
+
 import { userApi } from './entity/users';
 import { AuthPageComponent } from './pages/AuthPageComponent';
 import { OAuthCallbackPage } from './pages/OAuthCallbackPage';
@@ -13,6 +15,8 @@ import { MainScreenComponent } from './widgets/main/MainScreenComponent';
 function AppContent() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const { resolvedTheme } = useTheme();
+
+  useVersionCheck();
 
   useEffect(() => {
     const isAuthorized = userApi.isAuthorized();

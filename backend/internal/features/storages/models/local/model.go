@@ -2,16 +2,19 @@ package local_storage
 
 import (
 	"context"
-	"databasus-backend/internal/config"
-	"databasus-backend/internal/util/encryption"
-	files_utils "databasus-backend/internal/util/files"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/google/uuid"
+
+	"databasus-backend/internal/config"
+	"databasus-backend/internal/util/encryption"
+	files_utils "databasus-backend/internal/util/files"
 )
 
 const (
@@ -47,14 +50,15 @@ func (l *LocalStorage) SaveFile(
 
 	logger.Info("Starting to save file to local storage", "fileName", fileName)
 
+	tempFilePath := filepath.Join(config.GetEnv().TempFolder, fileName)
+
 	err := files_utils.EnsureDirectories([]string{
 		config.GetEnv().TempFolder,
+		filepath.Dir(tempFilePath),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to ensure directories: %w", err)
 	}
-
-	tempFilePath := filepath.Join(config.GetEnv().TempFolder, fileName)
 	logger.Debug("Creating temp file", "fileName", fileName, "tempPath", tempFilePath)
 
 	tempFile, err := os.Create(tempFilePath)
@@ -101,8 +105,12 @@ func (l *LocalStorage) SaveFile(
 		finalPath,
 	)
 
+	if err = files_utils.EnsureDirectories([]string{filepath.Dir(finalPath)}); err != nil {
+		return fmt.Errorf("failed to ensure final directory: %w", err)
+	}
+
 	// Move the file from temp to backups directory
-	if err = os.Rename(tempFilePath, finalPath); err != nil {
+	if err = moveFile(tempFilePath, finalPath); err != nil {
 		logger.Error(
 			"Failed to move file from temp to backups",
 			"fileName",
@@ -189,6 +197,52 @@ func (l *LocalStorage) EncryptSensitiveData(encryptor encryption.FieldEncryptor)
 }
 
 func (l *LocalStorage) Update(incoming *LocalStorage) {
+}
+
+// moveFile moves a file from src to dst. It first attempts os.Rename for efficiency.
+// If rename fails with a cross-device link error (EXDEV), it falls back to copy-then-delete.
+// This happens when users mount temp and backups directories as separate Docker volumes
+// (e.g., on Unraid with split volume mapping), causing them to reside on different filesystems.
+func moveFile(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) || !errors.Is(linkErr.Err, syscall.EXDEV) {
+		return err
+	}
+
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer func() {
+		_ = srcFile.Close()
+	}()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer func() {
+		_ = dstFile.Close()
+	}()
+
+	if _, err = io.Copy(dstFile, srcFile); err != nil {
+		return fmt.Errorf("failed to copy file: %w", err)
+	}
+
+	if err = dstFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync destination file: %w", err)
+	}
+
+	if err = os.Remove(src); err != nil {
+		return fmt.Errorf("failed to remove source file: %w", err)
+	}
+
+	return nil
 }
 
 func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {

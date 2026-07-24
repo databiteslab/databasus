@@ -4,12 +4,12 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_models "databasus-backend/internal/features/users/models"
 	users_testing "databasus-backend/internal/features/users/testing"
 	test_utils "databasus-backend/internal/util/testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_GetUserSettings_WhenUserIsAdmin_ReturnsSettings(t *testing.T) {

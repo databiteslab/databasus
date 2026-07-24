@@ -2,7 +2,7 @@ package teams_notifier
 
 import (
 	"bytes"
-	"databasus-backend/internal/util/encryption"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +11,9 @@ import (
 	"net/url"
 
 	"github.com/google/uuid"
+
+	notifier_models "databasus-backend/internal/features/notifiers/models"
+	"databasus-backend/internal/util/encryption"
 )
 
 type TeamsNotifier struct {
@@ -27,7 +30,7 @@ func (n *TeamsNotifier) Validate(encryptor encryption.FieldEncryptor) error {
 		return errors.New("webhook_url is required")
 	}
 
-	webhookURL, err := encryptor.Decrypt(n.NotifierID, n.WebhookURL)
+	webhookURL, err := encryptor.Decrypt(n.WebhookURL)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt webhook URL: %w", err)
 	}
@@ -47,19 +50,19 @@ type cardAttachment struct {
 type payload struct {
 	Title       string           `json:"title"`
 	Text        string           `json:"text"`
-	Attachments []cardAttachment `json:"attachments,omitempty"`
+	Attachments []cardAttachment `json:"attachments,omitzero"`
 }
 
 func (n *TeamsNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading, message string,
+	notification notifier_models.Notification,
 ) error {
 	if err := n.Validate(encryptor); err != nil {
 		return err
 	}
 
-	webhookURL, err := encryptor.Decrypt(n.NotifierID, n.WebhookURL)
+	webhookURL, err := encryptor.Decrypt(n.WebhookURL)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt webhook URL: %w", err)
 	}
@@ -72,22 +75,22 @@ func (n *TeamsNotifier) Send(
 				"type":   "TextBlock",
 				"size":   "Medium",
 				"weight": "Bolder",
-				"text":   heading,
+				"text":   notification.Heading,
 			},
-			map[string]any{"type": "TextBlock", "wrap": true, "text": message},
+			map[string]any{"type": "TextBlock", "wrap": true, "text": notification.Message},
 		},
 	}
 
 	p := payload{
-		Title: heading,
-		Text:  message,
+		Title: notification.Heading,
+		Text:  notification.Message,
 		Attachments: []cardAttachment{
 			{ContentType: "application/vnd.microsoft.card.adaptive", Content: card},
 		},
 	}
 
 	body, _ := json.Marshal(p)
-	req, err := http.NewRequest(http.MethodPost, webhookURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -123,7 +126,7 @@ func (n *TeamsNotifier) Update(incoming *TeamsNotifier) {
 
 func (n *TeamsNotifier) EncryptSensitiveData(encryptor encryption.FieldEncryptor) error {
 	if n.WebhookURL != "" {
-		encrypted, err := encryptor.Encrypt(n.NotifierID, n.WebhookURL)
+		encrypted, err := encryptor.Encrypt(n.WebhookURL)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt webhook URL: %w", err)
 		}

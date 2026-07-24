@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 
 import { storageApi } from '../../../entity/storages';
 import type { Storage } from '../../../entity/storages';
-import type { UserProfile } from '../../../entity/users';
 import type { WorkspaceResponse } from '../../../entity/workspaces';
 import { useIsMobile } from '../../../shared/hooks';
 import { StorageCardComponent } from './StorageCardComponent';
@@ -11,7 +10,6 @@ import { StorageComponent } from './StorageComponent';
 import { EditStorageComponent } from './edit/EditStorageComponent';
 
 interface Props {
-  user: UserProfile;
   contentHeight: number;
   workspace: WorkspaceResponse;
   isCanManageStorages: boolean;
@@ -19,12 +17,7 @@ interface Props {
 
 const SELECTED_STORAGE_STORAGE_KEY = 'selectedStorageId';
 
-export const StoragesComponent = ({
-  user,
-  contentHeight,
-  workspace,
-  isCanManageStorages,
-}: Props) => {
+export const StoragesComponent = ({ contentHeight, workspace, isCanManageStorages }: Props) => {
   const isMobile = useIsMobile();
   const [isLoading, setIsLoading] = useState(true);
   const [storages, setStorages] = useState<Storage[]>([]);
@@ -151,7 +144,6 @@ export const StoragesComponent = ({
                 loadStorages();
               }}
               isCanManageStorages={isCanManageStorages}
-              user={user}
             />
           </div>
         )}
@@ -178,7 +170,6 @@ export const StoragesComponent = ({
               loadStorages(false, storage.id);
               setIsShowAddStorage(false);
             }}
-            user={user}
           />
         </Modal>
       )}

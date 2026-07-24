@@ -7,4 +7,5 @@ export interface S3Storage {
   s3Prefix?: string;
   s3UseVirtualHostedStyle?: boolean;
   skipTLSVerify?: boolean;
+  s3StorageClass?: string;
 }

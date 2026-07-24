@@ -47,7 +47,7 @@ export default class RequestOptions {
 
     const requestJsonOptions: RequestInit = {
       headers: headersMatrix as [string, string][],
-      cache: 'no-cache',
+      cache: 'no-store',
     };
 
     if (this.method) {

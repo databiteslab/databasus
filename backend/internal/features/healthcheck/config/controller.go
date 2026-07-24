@@ -1,11 +1,12 @@
 package healthcheck_config
 
 import (
-	users_middleware "databasus-backend/internal/features/users/middleware"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	users_middleware "databasus-backend/internal/features/users/middleware"
 )
 
 type HealthcheckConfigController struct {

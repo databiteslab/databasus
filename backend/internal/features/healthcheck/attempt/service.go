@@ -1,13 +1,14 @@
 package healthcheck_attempt
 
 import (
-	"databasus-backend/internal/features/databases"
-	users_models "databasus-backend/internal/features/users/models"
-	workspaces_services "databasus-backend/internal/features/workspaces/services"
 	"errors"
 	"time"
 
 	"github.com/google/uuid"
+
+	"databasus-backend/internal/features/databases"
+	users_models "databasus-backend/internal/features/users/models"
+	workspaces_services "databasus-backend/internal/features/workspaces/services"
 )
 
 type HealthcheckAttemptService struct {

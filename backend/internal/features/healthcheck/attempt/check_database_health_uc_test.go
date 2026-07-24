@@ -6,17 +6,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+
 	"databasus-backend/internal/features/databases"
 	healthcheck_config "databasus-backend/internal/features/healthcheck/config"
 	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	"databasus-backend/internal/features/storages"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 )
+
+func unavailableNotification(databaseName string) notifier_models.Notification {
+	return notifier_models.Notification{
+		Type:    notifier_models.NotificationTypeHealthcheckFailed,
+		Heading: fmt.Sprintf("❌ [%s] DB is unavailable", databaseName),
+		Message: fmt.Sprintf("❌ [%s] DB is currently unavailable", databaseName),
+	}
+}
+
+func onlineNotification(databaseName string) notifier_models.Notification {
+	return notifier_models.Notification{
+		Type:    notifier_models.NotificationTypeHealthcheckSuccess,
+		Heading: fmt.Sprintf("✅ [%s] DB is online", databaseName),
+		Message: fmt.Sprintf("✅ [%s] DB is back online", databaseName),
+	}
+}
 
 func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 	user := users_testing.CreateTestUser(users_enums.UserRoleAdmin)
@@ -42,7 +59,7 @@ func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 
 		// Setup mock notifier sender
 		mockSender := &MockHealthcheckAttemptSender{}
-		mockSender.On("SendNotification", mock.Anything, mock.Anything, mock.Anything).Return()
+		mockSender.On("SendNotification", mock.Anything, mock.Anything).Return()
 
 		// Setup mock database service
 		mockDatabaseService := &MockDatabaseService{}
@@ -97,8 +114,7 @@ func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 			t,
 			"SendNotification",
 			mock.Anything,
-			fmt.Sprintf("❌ [%s] DB is unavailable", database.Name),
-			fmt.Sprintf("❌ [%s] DB is currently unavailable", database.Name),
+			unavailableNotification(database.Name),
 		)
 	})
 
@@ -162,8 +178,7 @@ func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 				t,
 				"SendNotification",
 				mock.Anything,
-				fmt.Sprintf("❌ [%s] DB is unavailable", database.Name),
-				fmt.Sprintf("❌ [%s] DB is currently unavailable", database.Name),
+				unavailableNotification(database.Name),
 			)
 		},
 	)
@@ -183,7 +198,7 @@ func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 
 			// Setup mock notifier sender
 			mockSender := &MockHealthcheckAttemptSender{}
-			mockSender.On("SendNotification", mock.Anything, mock.Anything, mock.Anything).Return()
+			mockSender.On("SendNotification", mock.Anything, mock.Anything).Return()
 
 			// Setup mock database service
 			mockDatabaseService := &MockDatabaseService{}
@@ -241,8 +256,7 @@ func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 				t,
 				"SendNotification",
 				mock.Anything,
-				fmt.Sprintf("❌ [%s] DB is unavailable", database.Name),
-				fmt.Sprintf("❌ [%s] DB is currently unavailable", database.Name),
+				unavailableNotification(database.Name),
 			)
 		},
 	)
@@ -260,7 +274,7 @@ func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 
 		// Setup mock notifier sender
 		mockSender := &MockHealthcheckAttemptSender{}
-		mockSender.On("SendNotification", mock.Anything, mock.Anything, mock.Anything).Return()
+		mockSender.On("SendNotification", mock.Anything, mock.Anything).Return()
 
 		// Setup mock database service - connection succeeds
 		mockDatabaseService := &MockDatabaseService{}
@@ -314,8 +328,7 @@ func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 			t,
 			"SendNotification",
 			mock.Anything,
-			fmt.Sprintf("✅ [%s] DB is online", database.Name),
-			fmt.Sprintf("✅ [%s] DB is back online", database.Name),
+			onlineNotification(database.Name),
 		)
 	})
 
@@ -327,7 +340,7 @@ func Test_CheckDatabaseHealthUseCase(t *testing.T) {
 
 			// Setup mock notifier sender
 			mockSender := &MockHealthcheckAttemptSender{}
-			mockSender.On("SendNotification", mock.Anything, mock.Anything, mock.Anything).Return()
+			mockSender.On("SendNotification", mock.Anything, mock.Anything).Return()
 
 			// Setup mock database service - connection succeeds
 			mockDatabaseService := &MockDatabaseService{}

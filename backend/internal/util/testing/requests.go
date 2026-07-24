@@ -2,6 +2,7 @@ package testing
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,7 @@ import (
 type RequestOptions struct {
 	Method         string
 	URL            string
-	Body           interface{}
+	Body           any
 	Headers        map[string]string
 	AuthToken      string
 	ExpectedStatus int
@@ -40,7 +41,7 @@ func MakeGetRequestAndUnmarshal(
 	router *gin.Engine,
 	url, authToken string,
 	expectedStatus int,
-	responseStruct interface{},
+	responseStruct any,
 ) *TestResponse {
 	return makeAuthenticatedRequestAndUnmarshal(
 		t,
@@ -58,7 +59,7 @@ func MakePostRequest(
 	t *testing.T,
 	router *gin.Engine,
 	url, authToken string,
-	body interface{},
+	body any,
 	expectedStatus int,
 ) *TestResponse {
 	return makeAuthenticatedRequest(t, router, "POST", url, authToken, body, expectedStatus)
@@ -68,9 +69,9 @@ func MakePostRequestAndUnmarshal(
 	t *testing.T,
 	router *gin.Engine,
 	url, authToken string,
-	body interface{},
+	body any,
 	expectedStatus int,
-	responseStruct interface{},
+	responseStruct any,
 ) *TestResponse {
 	return makeAuthenticatedRequestAndUnmarshal(
 		t,
@@ -88,7 +89,7 @@ func MakePutRequest(
 	t *testing.T,
 	router *gin.Engine,
 	url, authToken string,
-	body interface{},
+	body any,
 	expectedStatus int,
 ) *TestResponse {
 	return makeAuthenticatedRequest(t, router, "PUT", url, authToken, body, expectedStatus)
@@ -98,9 +99,9 @@ func MakePutRequestAndUnmarshal(
 	t *testing.T,
 	router *gin.Engine,
 	url, authToken string,
-	body interface{},
+	body any,
 	expectedStatus int,
-	responseStruct interface{},
+	responseStruct any,
 ) *TestResponse {
 	return makeAuthenticatedRequestAndUnmarshal(
 		t,
@@ -134,7 +135,7 @@ func MakeRequest(t *testing.T, router *gin.Engine, options RequestOptions) *Test
 		requestBody = bytes.NewBuffer(nil)
 	}
 
-	req, err := http.NewRequest(options.Method, options.URL, requestBody)
+	req, err := http.NewRequestWithContext(context.Background(), options.Method, options.URL, requestBody)
 	assert.NoError(t, err, "Failed to create HTTP request")
 
 	if options.Body != nil {
@@ -167,7 +168,7 @@ func makeRequestAndUnmarshal(
 	t *testing.T,
 	router *gin.Engine,
 	options RequestOptions,
-	responseStruct interface{},
+	responseStruct any,
 ) *TestResponse {
 	response := MakeRequest(t, router, options)
 
@@ -183,7 +184,7 @@ func makeAuthenticatedRequest(
 	t *testing.T,
 	router *gin.Engine,
 	method, url, authToken string,
-	body interface{},
+	body any,
 	expectedStatus int,
 ) *TestResponse {
 	return MakeRequest(t, router, RequestOptions{
@@ -199,9 +200,9 @@ func makeAuthenticatedRequestAndUnmarshal(
 	t *testing.T,
 	router *gin.Engine,
 	method, url, authToken string,
-	body interface{},
+	body any,
 	expectedStatus int,
-	responseStruct interface{},
+	responseStruct any,
 ) *TestResponse {
 	return makeRequestAndUnmarshal(t, router, RequestOptions{
 		Method:         method,

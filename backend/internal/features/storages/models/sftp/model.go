@@ -2,7 +2,6 @@ package sftp_storage
 
 import (
 	"context"
-	"databasus-backend/internal/util/encryption"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+
+	"databasus-backend/internal/util/encryption"
 )
 
 const (
@@ -228,7 +229,7 @@ func (s *SFTPStorage) HideSensitiveData() {
 
 func (s *SFTPStorage) EncryptSensitiveData(encryptor encryption.FieldEncryptor) error {
 	if s.Password != "" {
-		encrypted, err := encryptor.Encrypt(s.StorageID, s.Password)
+		encrypted, err := encryptor.Encrypt(s.Password)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt SFTP password: %w", err)
 		}
@@ -236,7 +237,7 @@ func (s *SFTPStorage) EncryptSensitiveData(encryptor encryption.FieldEncryptor) 
 	}
 
 	if s.PrivateKey != "" {
-		encrypted, err := encryptor.Encrypt(s.StorageID, s.PrivateKey)
+		encrypted, err := encryptor.Encrypt(s.PrivateKey)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt SFTP private key: %w", err)
 		}
@@ -277,7 +278,7 @@ func (s *SFTPStorage) connectWithContext(
 	var authMethods []ssh.AuthMethod
 
 	if s.Password != "" {
-		password, err := encryptor.Decrypt(s.StorageID, s.Password)
+		password, err := encryptor.Decrypt(s.Password)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to decrypt SFTP password: %w", err)
 		}
@@ -285,7 +286,7 @@ func (s *SFTPStorage) connectWithContext(
 	}
 
 	if s.PrivateKey != "" {
-		privateKey, err := encryptor.Decrypt(s.StorageID, s.PrivateKey)
+		privateKey, err := encryptor.Decrypt(s.PrivateKey)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to decrypt SFTP private key: %w", err)
 		}
@@ -297,12 +298,7 @@ func (s *SFTPStorage) connectWithContext(
 		authMethods = append(authMethods, ssh.PublicKeys(signer))
 	}
 
-	var hostKeyCallback ssh.HostKeyCallback
-	if s.SkipHostKeyVerify {
-		hostKeyCallback = ssh.InsecureIgnoreHostKey()
-	} else {
-		hostKeyCallback = ssh.InsecureIgnoreHostKey()
-	}
+	hostKeyCallback := ssh.InsecureIgnoreHostKey()
 
 	config := &ssh.ClientConfig{
 		User:            s.Username,

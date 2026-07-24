@@ -2,7 +2,7 @@ package discord_notifier
 
 import (
 	"bytes"
-	"databasus-backend/internal/util/encryption"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +11,9 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+
+	notifier_models "databasus-backend/internal/features/notifiers/models"
+	"databasus-backend/internal/util/encryption"
 )
 
 type DiscordNotifier struct {
@@ -33,20 +36,19 @@ func (d *DiscordNotifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (d *DiscordNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading string,
-	message string,
+	notification notifier_models.Notification,
 ) error {
-	webhookURL, err := encryptor.Decrypt(d.NotifierID, d.ChannelWebhookURL)
+	webhookURL, err := encryptor.Decrypt(d.ChannelWebhookURL)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt webhook URL: %w", err)
 	}
 
-	fullMessage := heading
-	if message != "" {
-		fullMessage = fmt.Sprintf("%s\n\n%s", heading, message)
+	fullMessage := notification.Heading
+	if notification.Message != "" {
+		fullMessage = fmt.Sprintf("%s\n\n%s", notification.Heading, notification.Message)
 	}
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"content": fullMessage,
 	}
 
@@ -55,7 +57,7 @@ func (d *DiscordNotifier) Send(
 		return fmt.Errorf("failed to marshal Discord payload: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", webhookURL, bytes.NewReader(jsonPayload))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", webhookURL, bytes.NewReader(jsonPayload))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -95,7 +97,7 @@ func (d *DiscordNotifier) Update(incoming *DiscordNotifier) {
 
 func (d *DiscordNotifier) EncryptSensitiveData(encryptor encryption.FieldEncryptor) error {
 	if d.ChannelWebhookURL != "" {
-		encrypted, err := encryptor.Encrypt(d.NotifierID, d.ChannelWebhookURL)
+		encrypted, err := encryptor.Encrypt(d.ChannelWebhookURL)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt webhook URL: %w", err)
 		}

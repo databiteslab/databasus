@@ -1,10 +1,14 @@
+import { PostgresSslMode } from './PostgresSslMode';
+
+const IPV4_PATTERN = /^\d{1,3}(\.\d{1,3}){3}$/;
+
 export type ParseResult = {
   host: string;
   port: number;
   username: string;
   password: string;
   database: string;
-  isHttps: boolean;
+  sslMode: PostgresSslMode;
 };
 
 export type ParseError = {
@@ -81,7 +85,7 @@ export class ConnectionStringParser {
 
       if (azureMatch) {
         const [, user, , password, host, port, database, queryString] = azureMatch;
-        const isHttps = this.checkSslMode(queryString);
+        const sslMode = this.checkSslMode(queryString, host);
 
         return {
           host: host,
@@ -89,7 +93,7 @@ export class ConnectionStringParser {
           username: decodeURIComponent(user),
           password: decodeURIComponent(password),
           database: decodeURIComponent(database),
-          isHttps,
+          sslMode,
         };
       }
 
@@ -101,7 +105,7 @@ export class ConnectionStringParser {
       const username = decodeURIComponent(url.username);
       const password = decodeURIComponent(url.password);
       const database = decodeURIComponent(url.pathname.slice(1)); // Remove leading /
-      const isHttps = this.checkSslMode(url.search);
+      const sslMode = this.checkSslMode(url.search, host);
 
       // Validate required fields
       if (!host) {
@@ -126,7 +130,7 @@ export class ConnectionStringParser {
         username,
         password,
         database,
-        isHttps,
+        sslMode,
       };
     } catch (e) {
       return {
@@ -162,7 +166,7 @@ export class ConnectionStringParser {
       const params = new URLSearchParams(queryString);
       const username = params.get('user');
       const password = params.get('password');
-      const isHttps = this.checkSslMode(queryString);
+      const sslMode = this.checkSslMode(queryString, host);
 
       if (!username) {
         return {
@@ -184,7 +188,7 @@ export class ConnectionStringParser {
         username: decodeURIComponent(username),
         password: decodeURIComponent(password),
         database: decodeURIComponent(database),
-        isHttps,
+        sslMode,
       };
     } catch (e) {
       return {
@@ -245,7 +249,7 @@ export class ConnectionStringParser {
         };
       }
 
-      const isHttps = this.isSslEnabled(sslmode);
+      const sslMode = this.resolveSslMode(sslmode, host);
 
       return {
         host,
@@ -253,7 +257,7 @@ export class ConnectionStringParser {
         username,
         password,
         database,
-        isHttps,
+        sslMode,
       };
     } catch (e) {
       return {
@@ -263,22 +267,46 @@ export class ConnectionStringParser {
     }
   }
 
-  private static checkSslMode(queryString: string | undefined | null): boolean {
-    if (!queryString) return false;
+  private static checkSslMode(
+    queryString: string | undefined | null,
+    host: string,
+  ): PostgresSslMode {
+    const normalizedQuery = queryString?.startsWith('?')
+      ? queryString.slice(1)
+      : (queryString ?? '');
+    const params = new URLSearchParams(normalizedQuery);
 
-    const params = new URLSearchParams(
-      queryString.startsWith('?') ? queryString.slice(1) : queryString,
-    );
-    const sslmode = params.get('sslmode');
-
-    return this.isSslEnabled(sslmode);
+    return this.resolveSslMode(params.get('sslmode'), host);
   }
 
-  private static isSslEnabled(sslmode: string | null | undefined): boolean {
-    if (!sslmode) return false;
+  private static resolveSslMode(sslmode: string | null | undefined, host: string): PostgresSslMode {
+    return this.parseSslMode(sslmode) ?? this.deriveSslModeFromHost(host);
+  }
 
-    // These modes require SSL
-    const sslModes = ['require', 'verify-ca', 'verify-full'];
-    return sslModes.includes(sslmode.toLowerCase());
+  private static parseSslMode(sslmode: string | null | undefined): PostgresSslMode | null {
+    switch (sslmode?.toLowerCase()) {
+      case 'require':
+        return PostgresSslMode.Require;
+      case 'verify-ca':
+        return PostgresSslMode.VerifyCa;
+      case 'verify-full':
+        return PostgresSslMode.VerifyFull;
+      case 'disable':
+      case 'prefer':
+      case 'allow':
+        return PostgresSslMode.Disable;
+      default:
+        return null;
+    }
+  }
+
+  private static deriveSslModeFromHost(host: string): PostgresSslMode {
+    const bareHost = host.trim().toLowerCase();
+
+    if (bareHost === 'localhost' || IPV4_PATTERN.test(bareHost)) {
+      return PostgresSslMode.Disable;
+    }
+
+    return PostgresSslMode.Require;
   }
 }

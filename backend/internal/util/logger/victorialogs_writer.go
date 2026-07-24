@@ -28,7 +28,7 @@ type VictoriaLogsWriter struct {
 	httpClient *http.Client
 	logChannel chan logEntry
 	wg         sync.WaitGroup
-	once       sync.Once
+	shutdown   func()
 	ctx        context.Context
 	cancel     context.CancelFunc
 	logger     *slog.Logger
@@ -50,16 +50,34 @@ func NewVictoriaLogsWriter(url, username, password string) *VictoriaLogsWriter {
 		logger:     slog.New(slog.NewTextHandler(os.Stdout, nil)),
 	}
 
+	writer.shutdown = sync.OnceFunc(func() {
+		// Stop accepting new logs
+		writer.cancel()
+
+		// Wait for workers to finish with timeout
+		done := make(chan struct{})
+		go func() {
+			writer.wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			writer.logger.Info("VictoriaLogs writer shutdown gracefully")
+		case <-time.After(5 * time.Second):
+			writer.logger.Warn("VictoriaLogs writer shutdown timeout, some logs may be lost")
+		}
+	})
+
 	// Start 3 worker goroutines
 	for range 3 {
-		writer.wg.Add(1)
-		go writer.worker()
+		writer.wg.Go(writer.worker)
 	}
 
 	return writer
 }
 
-func (w *VictoriaLogsWriter) Write(level, message string, attrs map[string]interface{}) {
+func (w *VictoriaLogsWriter) Write(level, message string, attrs map[string]any) {
 	entry := logEntry{
 		Time:    time.Now().UTC().Format(time.RFC3339Nano),
 		Message: message,
@@ -76,9 +94,11 @@ func (w *VictoriaLogsWriter) Write(level, message string, attrs map[string]inter
 	}
 }
 
-func (w *VictoriaLogsWriter) worker() {
-	defer w.wg.Done()
+func (w *VictoriaLogsWriter) Shutdown(timeout time.Duration) {
+	w.shutdown()
+}
 
+func (w *VictoriaLogsWriter) worker() {
 	batch := make([]logEntry, 0, 100)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -179,25 +199,4 @@ func (w *VictoriaLogsWriter) flushBatch(batch []logEntry) {
 	if len(batch) > 0 {
 		w.sendBatch(batch)
 	}
-}
-
-func (w *VictoriaLogsWriter) Shutdown(timeout time.Duration) {
-	w.once.Do(func() {
-		// Stop accepting new logs
-		w.cancel()
-
-		// Wait for workers to finish with timeout
-		done := make(chan struct{})
-		go func() {
-			w.wg.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-			w.logger.Info("VictoriaLogs writer shutdown gracefully")
-		case <-time.After(timeout):
-			w.logger.Warn("VictoriaLogs writer shutdown timeout, some logs may be lost")
-		}
-	})
 }

@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	user_enums "databasus-backend/internal/features/users/enums"
 	user_interfaces "databasus-backend/internal/features/users/interfaces"
 	user_models "databasus-backend/internal/features/users/models"
 	user_repositories "databasus-backend/internal/features/users/repositories"
-
-	"github.com/google/uuid"
 )
 
 type UserManagementService struct {

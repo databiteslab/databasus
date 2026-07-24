@@ -1,8 +1,10 @@
 package users_repositories
 
-var userRepository = &UserRepository{}
-var usersSettingsRepository = &UsersSettingsRepository{}
-var passwordResetRepository = &PasswordResetRepository{}
+var (
+	userRepository          = &UserRepository{}
+	usersSettingsRepository = &UsersSettingsRepository{}
+	passwordResetRepository = &PasswordResetRepository{}
+)
 
 func GetUserRepository() *UserRepository {
 	return userRepository

@@ -3,9 +3,9 @@ package workspaces_models
 import (
 	"time"
 
-	users_enums "databasus-backend/internal/features/users/enums"
-
 	"github.com/google/uuid"
+
+	users_enums "databasus-backend/internal/features/users/enums"
 )
 
 type WorkspaceMembership struct {

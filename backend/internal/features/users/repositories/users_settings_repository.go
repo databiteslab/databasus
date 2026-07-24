@@ -1,11 +1,13 @@
 package users_repositories
 
 import (
-	user_models "databasus-backend/internal/features/users/models"
-	"databasus-backend/internal/storage"
+	"errors"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+
+	user_models "databasus-backend/internal/features/users/models"
+	"databasus-backend/internal/storage"
 )
 
 type UsersSettingsRepository struct{}
@@ -14,7 +16,7 @@ func (r *UsersSettingsRepository) GetSettings() (*user_models.UsersSettings, err
 	var settings user_models.UsersSettings
 
 	if err := storage.GetDb().First(&settings).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Create default settings if none exist
 			defaultSettings := &user_models.UsersSettings{
 				ID:                                uuid.New(),

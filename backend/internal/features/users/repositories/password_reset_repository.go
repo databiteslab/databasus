@@ -3,10 +3,10 @@ package users_repositories
 import (
 	"time"
 
+	"github.com/google/uuid"
+
 	users_models "databasus-backend/internal/features/users/models"
 	"databasus-backend/internal/storage"
-
-	"github.com/google/uuid"
 )
 
 type PasswordResetRepository struct{}
@@ -27,7 +27,6 @@ func (r *PasswordResetRepository) GetValidCodeByUserID(
 		Where("user_id = ? AND is_used = ? AND expires_at > ?", userID, false, time.Now().UTC()).
 		Order("created_at DESC").
 		First(&code).Error
-
 	if err != nil {
 		return nil, err
 	}

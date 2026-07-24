@@ -9,8 +9,10 @@ import (
 	"databasus-backend/internal/util/logger"
 )
 
-var workspaceRepository = &workspaces_repositories.WorkspaceRepository{}
-var membershipRepository = &workspaces_repositories.MembershipRepository{}
+var (
+	workspaceRepository  = &workspaces_repositories.WorkspaceRepository{}
+	membershipRepository = &workspaces_repositories.MembershipRepository{}
+)
 
 var workspaceService = &WorkspaceService{
 	workspaceRepository,

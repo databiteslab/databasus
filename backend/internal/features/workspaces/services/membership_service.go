@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
+
 	"databasus-backend/internal/config"
 	audit_logs "databasus-backend/internal/features/audit_logs"
 	users_dto "databasus-backend/internal/features/users/dto"
@@ -15,8 +17,6 @@ import (
 	workspaces_interfaces "databasus-backend/internal/features/workspaces/interfaces"
 	workspaces_models "databasus-backend/internal/features/workspaces/models"
 	workspaces_repositories "databasus-backend/internal/features/workspaces/repositories"
-
-	"github.com/google/uuid"
 )
 
 type MembershipService struct {

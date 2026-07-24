@@ -3,7 +3,6 @@ import { Spin } from 'antd';
 import { useEffect, useState } from 'react';
 
 import { userApi } from '../entity/users';
-import { PlaygroundWarningComponent } from '../features/playground';
 import {
   AdminPasswordComponent,
   AuthNavbarComponent,
@@ -42,7 +41,7 @@ export function AuthPageComponent() {
   }, []);
 
   return (
-    <div className="h-full dark:bg-gray-900" style={{ height: screenHeight }}>
+    <div className="flex min-h-full flex-col dark:bg-gray-900" style={{ minHeight: screenHeight }}>
       {isLoading ? (
         <div className="flex h-screen w-screen items-center justify-center">
           <Spin indicator={<LoadingOutlined spin />} size="large" />
@@ -83,8 +82,6 @@ export function AuthPageComponent() {
           </div>
         </div>
       )}
-
-      <PlaygroundWarningComponent />
     </div>
   );
 }

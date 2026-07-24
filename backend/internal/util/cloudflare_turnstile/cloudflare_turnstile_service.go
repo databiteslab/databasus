@@ -1,12 +1,14 @@
 package cloudflare_turnstile
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -42,7 +44,15 @@ func (s *CloudflareTurnstileService) VerifyToken(token, remoteIP string) (bool, 
 	formData.Set("response", token)
 	formData.Set("remoteip", remoteIP)
 
-	resp, err := http.PostForm(cloudflareTurnstileVerifyURL, formData)
+	req, err := http.NewRequestWithContext(
+		context.Background(), "POST", cloudflareTurnstileVerifyURL, strings.NewReader(formData.Encode()),
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to create Cloudflare Turnstile request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("failed to verify Cloudflare Turnstile: %w", err)
 	}

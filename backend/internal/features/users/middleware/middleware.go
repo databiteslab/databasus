@@ -1,12 +1,13 @@
 package users_middleware
 
 import (
-	users_enums "databasus-backend/internal/features/users/enums"
-	users_models "databasus-backend/internal/features/users/models"
-	users_services "databasus-backend/internal/features/users/services"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	users_enums "databasus-backend/internal/features/users/enums"
+	users_models "databasus-backend/internal/features/users/models"
+	users_services "databasus-backend/internal/features/users/services"
 )
 
 // AuthMiddleware validates JWT token and adds user to context

@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
@@ -69,7 +70,7 @@ func NewDecryptionReader(
 func (r *DecryptionReader) Read(p []byte) (n int, err error) {
 	for len(r.buffer) < len(p) && !r.eof {
 		if err := r.readAndDecryptChunk(); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				r.eof = true
 				break
 			}

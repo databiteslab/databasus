@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"databasus-backend/internal/config"
 	user_dto "databasus-backend/internal/features/users/dto"
 	users_errors "databasus-backend/internal/features/users/errors"
@@ -12,8 +14,6 @@ import (
 	users_services "databasus-backend/internal/features/users/services"
 	cache_utils "databasus-backend/internal/util/cache"
 	cloudflare_turnstile "databasus-backend/internal/util/cloudflare_turnstile"
-
-	"github.com/gin-gonic/gin"
 )
 
 type UserController struct {

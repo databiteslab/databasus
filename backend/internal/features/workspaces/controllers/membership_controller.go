@@ -4,13 +4,13 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
 	users_middleware "databasus-backend/internal/features/users/middleware"
 	workspaces_dto "databasus-backend/internal/features/workspaces/dto"
 	workspaces_errors "databasus-backend/internal/features/workspaces/errors"
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
-
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type MembershipController struct {

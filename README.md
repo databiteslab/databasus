@@ -1,8 +1,8 @@
 <div align="center">
   <img src="assets/logo.svg" alt="Databasus Logo" width="250"/>
 
-  <h3>Backup tool for PostgreSQL, MySQL and MongoDB</h3>
-  <p>Databasus is a free, open source and self-hosted tool to backup databases (with focus on PostgreSQL). Make backups with different storages (S3, Google Drive, FTP, etc.) and notifications about progress (Slack, Discord, Telegram, etc.). Previously known as Postgresus (see migration guide).</p>
+  <h3>PostgreSQL backup tool</h3>
+  <p>Databasus is a free, open source and self-hosted tool to backup PostgreSQL. Make backups with different storages (S3, Google Drive, FTP, etc.) and notifications about progress (Slack, Discord, Telegram, etc.). With a focus on Point-in-Time Recovery at low RPO/RTO</p>
   
   <!-- Badges -->
    [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
@@ -37,18 +37,28 @@
 
 ## ✨ Features
 
-### 💾 **Supported databases**
+### 📦 **Backup types**
 
-- **PostgreSQL**: 12, 13, 14, 15, 16, 17 and 18
-- **MySQL**: 5.7, 8 and 9
-- **MariaDB**: 10 and 11
-- **MongoDB**: 4, 5, 6, 7 and 8
+- **Physical**: file-level copy of the entire database cluster over PostgreSQL native incremental backups mechanism (read more)
+  - **Full**: a complete, self-contained copy of the cluster
+  - **Incremental**: stores only what changed since the previous full backup, so backups stay small and fast
+  - **WAL streaming**: continuously captures the database write stream, enabling Point-in-time recovery (PITR). Designed for disaster recovery and near-zero data loss
+- **Logical**: native dump of the database in its engine-specific binary format (compressed, suitable for parallel restore)
 
 ### 🔄 **Scheduled backups**
 
 - **Flexible scheduling**: hourly, daily, weekly, monthly or cron
 - **Precise timing**: run backups at specific times (e.g., 4 AM during low traffic)
 - **Smart compression**: 4-8x space savings with balanced compression (~20% overhead)
+
+### 🧪 **Restore verification** <a href="https://databasus.com/restore-verification">(docs)</a>
+
+Databasus performs a real restore to confirm backups are usable, not just intact on disk or checksum check.
+
+- **Triggers**: after each backup or on a flexible schedule (hourly, daily, weekly, monthly or cron)
+- **Real restore**: spins up a database container, runs the restore and checks the restored size against the backup
+- **Report**: lists every table with its row count
+- **Optional notifications**: send the report or failure-only alerts through any configured notifier
 
 ### 🗑️ **Retention policies**
 
@@ -63,7 +73,7 @@
 - **Cloud storage**: S3, Cloudflare R2, Google Drive, NAS, Dropbox, SFTP, Rclone and more
 - **Secure**: All data stays under your control
 
-### 📱 **Smart notifications** <a href="https://databasus.com/notifiers">(view supported)</a>
+### 📱 **Notifications** <a href="https://databasus.com/notifiers">(view supported)</a>
 
 - **Multiple channels**: Email, Telegram, Slack, Discord, webhooks
 - **Real-time updates**: Success and failure notifications
@@ -75,8 +85,6 @@
 - **Zero-trust storage**: Backups are encrypted and remain useless to attackers, so you can safely store them in shared storage like S3, Azure Blob Storage, etc.
 - **Encryption for secrets**: Any sensitive data is encrypted and never exposed, even in logs or error messages
 - **Read-only user**: Databasus uses a read-only user by default for backups and never stores anything that can modify your data
-
-It is also important for Databasus that you are able to decrypt and restore backups from storages (local, S3, etc.) without Databasus itself. To do so, read our guide on [how to recover directly from storage](https://databasus.com/how-to-recover-without-databasus). We avoid "vendor lock-in" even to open source tool!
 
 ### 👥 **Suitable for teams** <a href="https://databasus.com/access-management">(docs)</a>
 
@@ -91,15 +99,13 @@ It is also important for Databasus that you are able to decrypt and restore back
 - **Dark & light themes**: Choose the look that suits your workflow
 - **Mobile adaptive**: Check your backups from anywhere on any device
 
-### ☁️ **Works with self-hosted & cloud databases**
+### 💾 **Supported databases**
 
-Databasus works seamlessly with both self-hosted PostgreSQL and cloud-managed databases:
-
-- **Cloud support**: AWS RDS, Google Cloud SQL, Azure Database for PostgreSQL
-- **Self-hosted**: Any PostgreSQL instance you manage yourself
-- **Why no PITR support?**: Cloud providers already offer native PITR, and external PITR backups cannot be restored to managed cloud databases — making them impractical for cloud-hosted PostgreSQL
-- **Practical granularity**: Hourly and daily backups are sufficient for 99% of projects without the operational complexity of WAL archiving
-
+- **PostgreSQL**: 14, 15, 16, 17 and 18 (physical and logical)
+- **MySQL**: 5.7 and 8 (logical only)
+- **MariaDB**: 10, 11 and 12  (logical only)
+- **MongoDB**: 4.2+, 5, 6, 7 and 8  (logical only)
+- 
 ### 🐳 **Self-hosted & secure**
 
 - **Docker-based**: Easy deployment and management
@@ -170,6 +176,12 @@ services:
     volumes:
       - ./databasus-data:/databasus-data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "databasus", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 ```
 
 Then run:
@@ -243,7 +255,23 @@ Replace `admin` with the actual email address of the user whose password you wan
 
 ### 💾 Backuping Databasus itself
 
-After installation, it is also recommended to <a href="https://databasus.com/faq/#backup-databasus">backup your Databasus itself</a> or, at least, to copy secret key used for encryption (30 seconds is needed). So you are able to restore from your encrypted backups if you lose access to the server with Databasus or it is corrupted.
+After installation, it is also recommended to <a href="https://databasus.com/faq#backup-databasus">backup your Databasus itself</a> or, at least, to copy secret key used for encryption (30 seconds is needed). So you are able to restore from your encrypted backups if you lose access to the server with Databasus or it is corrupted.
+
+---
+
+## 🛡️ Security & reliability engineering
+
+Databasus works with sensitive data, so preventing vulnerabilities, unauthorised access and data leaks is a primary concern. We invest in this on both sides of the system: in the code itself (permission checks, encryption, careful handling of secrets) and in the infrastructure around it (dependency analysis, CVE response, DevSecOps best practices). The pipeline below runs automatically on every commit and PR. No single layer is enough on its own, but together they reduce the chance of vulnerable code, unsafe dependencies, broken images, or non-restorable backups reaching a release.
+
+For static analysis we combine several independent passes. CodeQL scans the full codebase for security issues. CodeRabbit reviews every PR and runs gitleaks for secret scanning and semgrep for security rules inline. Dockerfiles and CI workflows get extra rules of their own (pinned action references, least-privilege permissions, suspicious base images), so insecure patterns are flagged before they ever merge. On top of these per-PR checks, Codex Security from OpenAI runs regular, deeper audits of the whole codebase. It's a separate program that catches architectural and cross-cutting issues narrow PR-time scans can miss.
+
+On the dependency side, Dependabot watches all of our dependencies against the GitHub Advisory Database and surfaces CVEs within minutes of publication. Updates run through a cooldown so newly-published versions get a chance to mature before we adopt them. This is a deliberate defence against compromised-package incidents like supply-chain attack. The Dependency Review Action blocks any PR that introduces a new HIGH or CRITICAL CVE outright.
+
+Container images are scanned with Trivy on every build. A separate Trivy pass on the Dockerfile catches misconfigurations before they make it into an image. All GitHub Actions are pinned to full commit SHAs rather than floating tags like `@v4` or `@main`, which have been an active attack vector in 2025. Workflows default to least-privilege permissions and only elevate per-job when genuinely needed.
+
+Critical paths are covered by both unit and integration tests, run against real database containers for every supported engine and major version. Restore is the path that matters most for a backup tool, so we test it explicitly: every PR runs full backup-then-restore cycles against those same real containers, verifying that backups can actually be restored end-to-end, not just written successfully. The rest of the CI/CD pipeline runs lint, type-check, the full test suite, image smoke tests and multi-architecture builds on every PR. A release only ships if all of it passes.
+
+Found a vulnerability? Report it via the GitHub Security tab. See [SECURITY.md](https://github.com/databasus/databasus?tab=security-ov-file#readme). Security reports are the highest-priority work queue. For runtime application security (AES-256-GCM at rest, zero-trust storage, encrypted secrets, read-only DB user by default) see [Enterprise-grade security](#-enterprise-grade-security) in the Features section above.
 
 ---
 
@@ -261,12 +289,17 @@ Also you can join our large community of developers, DBAs and DevOps engineers o
 
 There have been questions about AI usage in project development in issues and discussions. As the project focuses on security, reliability and production usage, it's important to explain how AI is used in the development process.
 
+First of all, we are proud to say that Databasus has been accepted into both [Claude for Open Source](https://claude.com/contact-sales/claude-for-oss) by Anthropic and [Codex for Open Source](https://developers.openai.com/codex/community/codex-for-oss/) by OpenAI in March 2026. For us it is one more signal that the project was recognized as important open-source software and was as critical infrastructure worth supporting independently by two of the world's leading AI companies. Read more at [databasus.com/faq](https://databasus.com/faq#oss-programs).
+
+Despite of this, we have the following rules how AI is used in the development process:
+
 AI is used as a helper for:
 
 - verification of code quality and searching for vulnerabilities
 - cleaning up and improving documentation, comments and code
 - assistance during development
 - double-checking PRs and commits after human review
+- additional security analysis of PRs via Codex Security
 
 AI is not used for:
 
@@ -275,16 +308,10 @@ AI is not used for:
 - code without line-by-line verification by a human
 - code without tests
 
-The project has:
-
-- solid test coverage (both unit and integration tests)
-- CI/CD pipeline automation with tests and linting to ensure code quality
-- verification by experienced developers with experience in large and secure projects
-
 So AI is just an assistant and a tool for developers to increase productivity and ensure code quality. The work is done by developers.
 
 Moreover, it's important to note that we do not differentiate between bad human code and AI vibe code. There are strict requirements for any code to be merged to keep the codebase maintainable.
 
 Even if code is written manually by a human, it's not guaranteed to be merged. Vibe code is not allowed at all and all such PRs are rejected by default (see [contributing guide](https://databasus.com/contribute)).
 
-We also draw attention to fast issue resolution and security [vulnerability reporting](https://github.com/databasus/databasus?tab=security-ov-file#readme).
+The engineering safeguards behind these rules (CI, static analysis, dependency scanning, test coverage and vulnerability response) are documented in [Security & reliability engineering](#️-security--reliability-engineering) above.

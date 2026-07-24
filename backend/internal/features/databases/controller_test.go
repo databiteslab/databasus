@@ -7,22 +7,34 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"databasus-backend/internal/config"
+	"databasus-backend/internal/features/audit_logs"
+	physical_testing "databasus-backend/internal/features/backups/backups/core/physical/testing"
 	"databasus-backend/internal/features/databases/databases/mariadb"
 	"databasus-backend/internal/features/databases/databases/mongodb"
-	"databasus-backend/internal/features/databases/databases/postgresql"
+	postgresql_logical "databasus-backend/internal/features/databases/databases/postgresql/logical"
+	postgresql_physical "databasus-backend/internal/features/databases/databases/postgresql/physical"
+	postgresql_shared "databasus-backend/internal/features/databases/databases/postgresql/shared"
+	"databasus-backend/internal/features/notifiers"
+	"databasus-backend/internal/features/storages"
 	users_enums "databasus-backend/internal/features/users/enums"
+	users_middleware "databasus-backend/internal/features/users/middleware"
+	users_services "databasus-backend/internal/features/users/services"
 	users_testing "databasus-backend/internal/features/users/testing"
 	workspaces_controllers "databasus-backend/internal/features/workspaces/controllers"
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
 	"databasus-backend/internal/util/encryption"
 	test_utils "databasus-backend/internal/util/testing"
+	"databasus-backend/internal/util/testing/containers"
 	"databasus-backend/internal/util/tools"
+	"databasus-backend/internal/util/walmath"
 )
 
 func Test_CreateDatabase_PermissionsEnforced(t *testing.T) {
@@ -89,10 +101,10 @@ func Test_CreateDatabase_PermissionsEnforced(t *testing.T) {
 			}
 
 			request := Database{
-				Name:        "Test Database",
-				WorkspaceID: &workspace.ID,
-				Type:        DatabaseTypePostgres,
-				Postgresql:  getTestPostgresConfig(),
+				Name:              "Test Database",
+				WorkspaceID:       &workspace.ID,
+				Type:              DatabaseTypePostgresLogical,
+				PostgresqlLogical: getTestPostgresConfig(),
 			}
 
 			var response Database
@@ -126,10 +138,10 @@ func Test_CreateDatabase_WhenUserIsNotWorkspaceMember_ReturnsForbidden(t *testin
 	nonMember := users_testing.CreateTestUser(users_enums.UserRoleMember)
 
 	request := Database{
-		Name:        "Test Database",
-		WorkspaceID: &workspace.ID,
-		Type:        DatabaseTypePostgres,
-		Postgresql:  getTestPostgresConfig(),
+		Name:              "Test Database",
+		WorkspaceID:       &workspace.ID,
+		Type:              DatabaseTypePostgresLogical,
+		PostgresqlLogical: getTestPostgresConfig(),
 	}
 
 	testResp := test_utils.MakePostRequest(
@@ -142,6 +154,33 @@ func Test_CreateDatabase_WhenUserIsNotWorkspaceMember_ReturnsForbidden(t *testin
 	)
 
 	assert.Contains(t, string(testResp.Body), "insufficient permissions")
+}
+
+func Test_CreateDatabase_WithoutConnectionFields_ValidationFails(t *testing.T) {
+	router := createTestRouter()
+	owner := users_testing.CreateTestUser(users_enums.UserRoleMember)
+	workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
+	defer workspaces_testing.RemoveTestWorkspace(workspace, router)
+
+	request := Database{
+		Name:        "Test Database",
+		WorkspaceID: &workspace.ID,
+		Type:        DatabaseTypePostgresLogical,
+		PostgresqlLogical: &postgresql_logical.PostgresqlLogicalDatabase{
+			CpuCount: 1,
+		},
+	}
+
+	testResp := test_utils.MakePostRequest(
+		t,
+		router,
+		"/api/v1/databases/create",
+		"Bearer "+owner.Token,
+		request,
+		http.StatusBadRequest,
+	)
+
+	assert.Contains(t, string(testResp.Body), "host is required")
 }
 
 func Test_UpdateDatabase_PermissionsEnforced(t *testing.T) {
@@ -254,6 +293,29 @@ func Test_UpdateDatabase_WhenUserIsNotWorkspaceMember_ReturnsForbidden(t *testin
 	)
 
 	assert.Contains(t, string(testResp.Body), "insufficient permissions")
+}
+
+func Test_UpdateDatabase_WhenDatabaseTypeChanged_ReturnsBadRequest(t *testing.T) {
+	router := createTestRouter()
+	owner := users_testing.CreateTestUser(users_enums.UserRoleMember)
+	workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
+	defer workspaces_testing.RemoveTestWorkspace(workspace, router)
+
+	database := createTestDatabaseViaAPI("Test Database", workspace.ID, owner.Token, router)
+	defer RemoveTestDatabase(database)
+
+	database.Type = DatabaseTypeMysql
+
+	testResp := test_utils.MakePostRequest(
+		t,
+		router,
+		"/api/v1/databases/update",
+		"Bearer "+owner.Token,
+		database,
+		http.StatusBadRequest,
+	)
+
+	assert.Contains(t, string(testResp.Body), "database type cannot be changed")
 }
 
 func Test_DeleteDatabase_PermissionsEnforced(t *testing.T) {
@@ -523,6 +585,79 @@ func Test_GetDatabasesByWorkspace_WhenMultipleDatabasesExist_ReturnsCorrectCount
 	assert.Equal(t, 3, len(response))
 }
 
+func Test_GetDatabasesByWorkspace_WithPhysicalBackups_ReturnsNewestBackupTimeAcrossTypes(t *testing.T) {
+	const walSegmentBytes = 16 * 1024 * 1024
+
+	router := createTestRouter()
+	owner := users_testing.CreateTestUser(users_enums.UserRoleMember)
+	workspace := workspaces_testing.CreateTestWorkspace("Phys Last Backup "+uuid.NewString(), owner, router)
+	defer workspaces_testing.RemoveTestWorkspace(workspace, router)
+
+	storage := storages.CreateTestStorage(workspace.ID)
+	defer storages.RemoveTestStorage(storage.ID)
+	notifier := notifiers.CreateTestNotifier(workspace.ID)
+	defer notifiers.RemoveTestNotifier(notifier)
+
+	backedUp := CreateTestPhysicalPostgresDatabase(workspace.ID, notifier, "17")
+	defer func() {
+		physical_testing.DeleteAllPhysicalCatalogForDatabase(t, backedUp.ID)
+		RemoveTestDatabase(backedUp)
+	}()
+	noBackups := CreateTestPhysicalPostgresDatabase(workspace.ID, notifier, "17")
+	defer RemoveTestDatabase(noBackups)
+
+	base := time.Now().UTC().Add(-time.Hour)
+
+	fullBackup := physical_testing.NewTestCompletedFullBackup(
+		backedUp.ID, storage.ID, 1, walmath.LSN(0), walmath.LSN(walSegmentBytes))
+	fullBackup.CreatedAt = base
+	fullBackup.CompletedAt = new(base)
+	physical_testing.CreateTestFullBackup(t, fullBackup)
+
+	incrementalBackup := physical_testing.NewTestCompletedIncrementalBackup(
+		backedUp.ID, storage.ID, fullBackup.ID, nil, 1, walmath.LSN(walSegmentBytes), walmath.LSN(2*walSegmentBytes))
+	incrementalBackup.CreatedAt = base.Add(10 * time.Minute)
+	physical_testing.CreateTestIncrementalBackup(t, incrementalBackup)
+
+	// Newest of the three - the value the card must show.
+	walSegment := physical_testing.NewTestWalSegment(
+		backedUp.ID, storage.ID, 1, "000000010000000000000001",
+		walmath.LSN(2*walSegmentBytes), walmath.LSN(3*walSegmentBytes))
+	walSegment.ReceivedAt = base.Add(20 * time.Minute)
+	physical_testing.CreateTestWalSegment(t, walSegment)
+
+	var response []Database
+	test_utils.MakeGetRequestAndUnmarshal(
+		t,
+		router,
+		"/api/v1/databases?workspace_id="+workspace.ID.String(),
+		"Bearer "+owner.Token,
+		http.StatusOK,
+		&response,
+	)
+
+	backedUpListed := findDatabaseByID(t, response, backedUp.ID)
+	require.NotNil(t, backedUpListed.LastBackupTime, "physical database with backups must expose a last backup time")
+	assert.WithinDuration(t, walSegment.ReceivedAt, *backedUpListed.LastBackupTime, time.Second)
+
+	noBackupsListed := findDatabaseByID(t, response, noBackups.ID)
+	assert.Nil(t, noBackupsListed.LastBackupTime, "physical database without backups must have no last backup time")
+}
+
+func findDatabaseByID(t *testing.T, databases []Database, databaseID uuid.UUID) Database {
+	t.Helper()
+
+	for _, database := range databases {
+		if database.ID == databaseID {
+			return database
+		}
+	}
+
+	t.Fatalf("database %s not found in response", databaseID)
+
+	return Database{}
+}
+
 func Test_GetDatabasesByWorkspace_EnsuresCrossWorkspaceIsolation(t *testing.T) {
 	router := createTestRouter()
 	owner1 := users_testing.CreateTestUser(users_enums.UserRoleMember)
@@ -698,10 +833,10 @@ func Test_CreateDatabase_PasswordIsEncryptedInDB(t *testing.T) {
 	plainPassword := "testpassword"
 	pgConfig.Password = plainPassword
 	request := Database{
-		Name:        "Test Database",
-		WorkspaceID: &workspace.ID,
-		Type:        DatabaseTypePostgres,
-		Postgresql:  pgConfig,
+		Name:              "Test Database",
+		WorkspaceID:       &workspace.ID,
+		Type:              DatabaseTypePostgresLogical,
+		PostgresqlLogical: pgConfig,
 	}
 
 	var createdDatabase Database
@@ -719,20 +854,17 @@ func Test_CreateDatabase_PasswordIsEncryptedInDB(t *testing.T) {
 	databaseFromDB, err := repository.FindByID(createdDatabase.ID)
 	assert.NoError(t, err)
 	assert.NotNil(t, databaseFromDB)
-	assert.NotNil(t, databaseFromDB.Postgresql)
+	assert.NotNil(t, databaseFromDB.PostgresqlLogical)
 
 	assert.True(
 		t,
-		strings.HasPrefix(databaseFromDB.Postgresql.Password, "enc:"),
+		strings.HasPrefix(databaseFromDB.PostgresqlLogical.Password, "enc:"),
 		"Password should be encrypted in database with 'enc:' prefix, got: %s",
-		databaseFromDB.Postgresql.Password,
+		databaseFromDB.PostgresqlLogical.Password,
 	)
 
 	encryptor := encryption.GetFieldEncryptor()
-	decryptedPassword, err := encryptor.Decrypt(
-		databaseFromDB.ID,
-		databaseFromDB.Postgresql.Password,
-	)
+	decryptedPassword, err := encryptor.Decrypt(databaseFromDB.PostgresqlLogical.Password)
 	assert.NoError(t, err)
 	assert.Equal(t, plainPassword, decryptedPassword,
 		"Decrypted password should match original plaintext password")
@@ -752,52 +884,52 @@ func Test_DatabaseSensitiveDataLifecycle_AllTypes(t *testing.T) {
 	testCases := []struct {
 		name                string
 		databaseType        DatabaseType
-		createDatabase      func(workspaceID uuid.UUID) *Database
-		updateDatabase      func(workspaceID uuid.UUID, databaseID uuid.UUID) *Database
+		createDatabase      func(t *testing.T, workspaceID uuid.UUID) *Database
+		updateDatabase      func(t *testing.T, workspaceID, databaseID uuid.UUID) *Database
 		verifySensitiveData func(t *testing.T, database *Database)
 		verifyHiddenData    func(t *testing.T, database *Database)
 	}{
 		{
 			name:         "PostgreSQL Database",
-			databaseType: DatabaseTypePostgres,
-			createDatabase: func(workspaceID uuid.UUID) *Database {
+			databaseType: DatabaseTypePostgresLogical,
+			createDatabase: func(_ *testing.T, workspaceID uuid.UUID) *Database {
 				pgConfig := getTestPostgresConfig()
 				return &Database{
-					WorkspaceID: &workspaceID,
-					Name:        "Test PostgreSQL Database",
-					Type:        DatabaseTypePostgres,
-					Postgresql:  pgConfig,
+					WorkspaceID:       &workspaceID,
+					Name:              "Test PostgreSQL Database",
+					Type:              DatabaseTypePostgresLogical,
+					PostgresqlLogical: pgConfig,
 				}
 			},
-			updateDatabase: func(workspaceID uuid.UUID, databaseID uuid.UUID) *Database {
+			updateDatabase: func(_ *testing.T, workspaceID, databaseID uuid.UUID) *Database {
 				pgConfig := getTestPostgresConfig()
 				pgConfig.Password = ""
 				return &Database{
-					ID:          databaseID,
-					WorkspaceID: &workspaceID,
-					Name:        "Updated PostgreSQL Database",
-					Type:        DatabaseTypePostgres,
-					Postgresql:  pgConfig,
+					ID:                databaseID,
+					WorkspaceID:       &workspaceID,
+					Name:              "Updated PostgreSQL Database",
+					Type:              DatabaseTypePostgresLogical,
+					PostgresqlLogical: pgConfig,
 				}
 			},
 			verifySensitiveData: func(t *testing.T, database *Database) {
-				assert.True(t, strings.HasPrefix(database.Postgresql.Password, "enc:"),
+				assert.True(t, strings.HasPrefix(database.PostgresqlLogical.Password, "enc:"),
 					"Password should be encrypted in database")
 
 				encryptor := encryption.GetFieldEncryptor()
-				decrypted, err := encryptor.Decrypt(database.ID, database.Postgresql.Password)
+				decrypted, err := encryptor.Decrypt(database.PostgresqlLogical.Password)
 				assert.NoError(t, err)
 				assert.Equal(t, "testpassword", decrypted)
 			},
 			verifyHiddenData: func(t *testing.T, database *Database) {
-				assert.Equal(t, "", database.Postgresql.Password)
+				assert.Equal(t, "", database.PostgresqlLogical.Password)
 			},
 		},
 		{
 			name:         "MariaDB Database",
 			databaseType: DatabaseTypeMariadb,
-			createDatabase: func(workspaceID uuid.UUID) *Database {
-				mariaConfig := getTestMariadbConfig()
+			createDatabase: func(t *testing.T, workspaceID uuid.UUID) *Database {
+				mariaConfig := getTestMariadbConfig(t)
 				return &Database{
 					WorkspaceID: &workspaceID,
 					Name:        "Test MariaDB Database",
@@ -805,8 +937,8 @@ func Test_DatabaseSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					Mariadb:     mariaConfig,
 				}
 			},
-			updateDatabase: func(workspaceID uuid.UUID, databaseID uuid.UUID) *Database {
-				mariaConfig := getTestMariadbConfig()
+			updateDatabase: func(t *testing.T, workspaceID, databaseID uuid.UUID) *Database {
+				mariaConfig := getTestMariadbConfig(t)
 				mariaConfig.Password = ""
 				return &Database{
 					ID:          databaseID,
@@ -821,7 +953,7 @@ func Test_DatabaseSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					"Password should be encrypted in database")
 
 				encryptor := encryption.GetFieldEncryptor()
-				decrypted, err := encryptor.Decrypt(database.ID, database.Mariadb.Password)
+				decrypted, err := encryptor.Decrypt(database.Mariadb.Password)
 				assert.NoError(t, err)
 				assert.Equal(t, "testpassword", decrypted)
 			},
@@ -832,8 +964,8 @@ func Test_DatabaseSensitiveDataLifecycle_AllTypes(t *testing.T) {
 		{
 			name:         "MongoDB Database",
 			databaseType: DatabaseTypeMongodb,
-			createDatabase: func(workspaceID uuid.UUID) *Database {
-				mongoConfig := getTestMongodbConfig()
+			createDatabase: func(t *testing.T, workspaceID uuid.UUID) *Database {
+				mongoConfig := getTestMongodbConfig(t)
 				return &Database{
 					WorkspaceID: &workspaceID,
 					Name:        "Test MongoDB Database",
@@ -841,8 +973,8 @@ func Test_DatabaseSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					Mongodb:     mongoConfig,
 				}
 			},
-			updateDatabase: func(workspaceID uuid.UUID, databaseID uuid.UUID) *Database {
-				mongoConfig := getTestMongodbConfig()
+			updateDatabase: func(t *testing.T, workspaceID, databaseID uuid.UUID) *Database {
+				mongoConfig := getTestMongodbConfig(t)
 				mongoConfig.Password = ""
 				return &Database{
 					ID:          databaseID,
@@ -857,7 +989,7 @@ func Test_DatabaseSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					"Password should be encrypted in database")
 
 				encryptor := encryption.GetFieldEncryptor()
-				decrypted, err := encryptor.Decrypt(database.ID, database.Mongodb.Password)
+				decrypted, err := encryptor.Decrypt(database.Mongodb.Password)
 				assert.NoError(t, err)
 				assert.Equal(t, "rootpassword", decrypted)
 			},
@@ -874,7 +1006,7 @@ func Test_DatabaseSensitiveDataLifecycle_AllTypes(t *testing.T) {
 			workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
 
 			// Phase 1: Create database with sensitive data
-			initialDatabase := tc.createDatabase(workspace.ID)
+			initialDatabase := tc.createDatabase(t, workspace.ID)
 			var createdDatabase Database
 			test_utils.MakePostRequestAndUnmarshal(
 				t,
@@ -902,7 +1034,7 @@ func Test_DatabaseSensitiveDataLifecycle_AllTypes(t *testing.T) {
 			assert.Equal(t, initialDatabase.Name, retrievedDatabase.Name)
 
 			// Phase 3: Update with non-sensitive changes only (sensitive fields empty)
-			updatedDatabase := tc.updateDatabase(workspace.ID, createdDatabase.ID)
+			updatedDatabase := tc.updateDatabase(t, workspace.ID, createdDatabase.ID)
 			var updateResponse Database
 			test_utils.MakePostRequestAndUnmarshal(
 				t,
@@ -1057,17 +1189,17 @@ func createTestDatabaseViaAPI(
 	router *gin.Engine,
 ) *Database {
 	env := config.GetEnv()
-	port, err := strconv.Atoi(env.TestPostgres16Port)
+	port, err := strconv.Atoi(env.TestLogicalPostgres16Port)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to parse TEST_POSTGRES_16_PORT: %v", err))
+		panic(fmt.Sprintf("Failed to parse TEST_LOGICAL_POSTGRES_16_PORT: %v", err))
 	}
 
 	testDbName := "testdb"
 	request := Database{
 		Name:        name,
 		WorkspaceID: &workspaceID,
-		Type:        DatabaseTypePostgres,
-		Postgresql: &postgresql.PostgresqlDatabase{
+		Type:        DatabaseTypePostgresLogical,
+		PostgresqlLogical: &postgresql_logical.PostgresqlLogicalDatabase{
 			Version:  tools.PostgresqlVersion16,
 			Host:     config.GetEnv().TestLocalhost,
 			Port:     port,
@@ -1101,23 +1233,32 @@ func createTestDatabaseViaAPI(
 }
 
 func createTestRouter() *gin.Engine {
-	router := workspaces_testing.CreateTestRouter(
-		workspaces_controllers.GetWorkspaceController(),
-		workspaces_controllers.GetMembershipController(),
-		GetDatabaseController(),
-	)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	v1 := router.Group("/api/v1")
+	protected := v1.Group("").Use(users_middleware.AuthMiddleware(users_services.GetUserService()))
+
+	workspaces_controllers.GetWorkspaceController().RegisterRoutes(protected.(*gin.RouterGroup))
+	workspaces_controllers.GetMembershipController().RegisterRoutes(protected.(*gin.RouterGroup))
+	GetDatabaseController().RegisterRoutes(protected.(*gin.RouterGroup))
+
+	GetDatabaseController().RegisterPublicRoutes(v1)
+
+	audit_logs.SetupDependencies()
+
 	return router
 }
 
-func getTestPostgresConfig() *postgresql.PostgresqlDatabase {
+func getTestPostgresConfig() *postgresql_logical.PostgresqlLogicalDatabase {
 	env := config.GetEnv()
-	port, err := strconv.Atoi(env.TestPostgres16Port)
+	port, err := strconv.Atoi(env.TestLogicalPostgres16Port)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to parse TEST_POSTGRES_16_PORT: %v", err))
+		panic(fmt.Sprintf("Failed to parse TEST_LOGICAL_POSTGRES_16_PORT: %v", err))
 	}
 
 	testDbName := "testdb"
-	return &postgresql.PostgresqlDatabase{
+	return &postgresql_logical.PostgresqlLogicalDatabase{
 		Version:  tools.PostgresqlVersion16,
 		Host:     config.GetEnv().TestLocalhost,
 		Port:     port,
@@ -1128,49 +1269,155 @@ func getTestPostgresConfig() *postgresql.PostgresqlDatabase {
 	}
 }
 
-func getTestMariadbConfig() *mariadb.MariadbDatabase {
-	env := config.GetEnv()
-	portStr := env.TestMariadb1011Port
-	if portStr == "" {
-		portStr = "33111"
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to parse TEST_MARIADB_1011_PORT: %v", err))
+func Test_CreateDatabase_WhenUserIsNotReadOnly_DatabaseCreated(t *testing.T) {
+	router := createTestRouter()
+	owner := users_testing.CreateTestUser(users_enums.UserRoleMember)
+	workspace := workspaces_testing.CreateTestWorkspace("Non-Cloud", owner, router)
+	defer workspaces_testing.RemoveTestWorkspace(workspace, router)
+
+	request := Database{
+		Name:              "Non-Cloud DB",
+		WorkspaceID:       &workspace.ID,
+		Type:              DatabaseTypePostgresLogical,
+		PostgresqlLogical: getTestPostgresConfig(),
 	}
 
-	testDbName := "testdb"
-	return &mariadb.MariadbDatabase{
-		Version:  tools.MariadbVersion1011,
-		Host:     config.GetEnv().TestLocalhost,
-		Port:     port,
-		Username: "testuser",
-		Password: "testpassword",
-		Database: &testDbName,
+	var response Database
+	test_utils.MakePostRequestAndUnmarshal(
+		t,
+		router,
+		"/api/v1/databases/create",
+		"Bearer "+owner.Token,
+		request,
+		http.StatusCreated,
+		&response,
+	)
+	defer RemoveTestDatabase(&response)
+
+	assert.Equal(t, "Non-Cloud DB", response.Name)
+	assert.NotEqual(t, uuid.Nil, response.ID)
+}
+
+func getTestMariadbConfig(t *testing.T) *mariadb.MariadbDatabase {
+	endpoint := containers.StartMariadb(t, "mariadb:10.11")
+
+	return GetTestMariadbConfig(endpoint.Host, endpoint.Port)
+}
+
+func getTestMongodbConfig(t *testing.T) *mongodb.MongodbDatabase {
+	endpoint := containers.StartMongodb(t, "mongo:7.0")
+
+	return GetTestMongodbConfig(endpoint.Host, endpoint.Port)
+}
+
+// physicalNoSummaryVersion pairs a version tag with its image for the summarize_wal=off tests,
+// which boot a throwaway no-summary source per version via containers.StartPhysicalPostgres.
+type physicalNoSummaryVersion struct {
+	tag   string
+	image string
+}
+
+var physicalNoSummaryVersions = []physicalNoSummaryVersion{
+	{"17", "postgres:17"},
+	{"18", "postgres:18"},
+}
+
+func Test_CreateDatabase_FailsForPhysicalIncrementalWhenSummarizeWalOff(t *testing.T) {
+	incrementalBackupTypes := []postgresql_physical.BackupType{
+		postgresql_physical.BackupTypeFullAndIncremental,
+		postgresql_physical.BackupTypeFullIncrementalAndWalStream,
+	}
+
+	for _, dbVersion := range physicalNoSummaryVersions {
+		for _, backupType := range incrementalBackupTypes {
+			t.Run(fmt.Sprintf("pg%s_%s", dbVersion.tag, backupType), func(t *testing.T) {
+				router := createTestRouter()
+				owner := users_testing.CreateTestUser(users_enums.UserRoleMember)
+				workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
+				defer workspaces_testing.RemoveTestWorkspace(workspace, router)
+
+				source := containers.StartPhysicalPostgres(t, dbVersion.image, containers.WithoutSummarizer())
+				physicalConfig := GetTestPhysicalPostgresConfigNoSummary(source.Host, source.Port, dbVersion.tag)
+				physicalConfig.BackupType = backupType
+
+				request := Database{
+					Name:               "Physical Incremental NoSummary",
+					WorkspaceID:        &workspace.ID,
+					Type:               DatabaseTypePostgresPhysical,
+					PostgresqlPhysical: physicalConfig,
+				}
+
+				resp := test_utils.MakePostRequest(
+					t,
+					router,
+					"/api/v1/databases/create",
+					"Bearer "+owner.Token,
+					request,
+					http.StatusBadRequest,
+				)
+
+				assert.Contains(t, string(resp.Body), string(postgresql_shared.ConnErrWalSummaryDisabled))
+			})
+		}
 	}
 }
 
-func getTestMongodbConfig() *mongodb.MongodbDatabase {
-	env := config.GetEnv()
-	portStr := env.TestMongodb70Port
-	if portStr == "" {
-		portStr = "27070"
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to parse TEST_MONGODB_70_PORT: %v", err))
-	}
+func Test_UpdateDatabase_FailsForSwitchToPhysicalIncrementalWhenSummarizeWalOff(t *testing.T) {
+	for _, dbVersion := range physicalNoSummaryVersions {
+		t.Run("pg"+dbVersion.tag, func(t *testing.T) {
+			router := createTestRouter()
+			owner := users_testing.CreateTestUser(users_enums.UserRoleMember)
+			workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
+			defer workspaces_testing.RemoveTestWorkspace(workspace, router)
 
-	return &mongodb.MongodbDatabase{
-		Version:      tools.MongodbVersion7,
-		Host:         config.GetEnv().TestLocalhost,
-		Port:         &port,
-		Username:     "root",
-		Password:     "rootpassword",
-		Database:     "testdb",
-		AuthDatabase: "admin",
-		IsHttps:      false,
-		IsSrv:        false,
-		CpuCount:     1,
+			source := containers.StartPhysicalPostgres(t, dbVersion.image, containers.WithoutSummarizer())
+			createRequest := Database{
+				Name:               "Physical Full Only NoSummary",
+				WorkspaceID:        &workspace.ID,
+				Type:               DatabaseTypePostgresPhysical,
+				PostgresqlPhysical: GetTestPhysicalPostgresConfigNoSummary(source.Host, source.Port, dbVersion.tag),
+			}
+
+			var createdDatabase Database
+			test_utils.MakePostRequestAndUnmarshal(
+				t,
+				router,
+				"/api/v1/databases/create",
+				"Bearer "+owner.Token,
+				createRequest,
+				http.StatusCreated,
+				&createdDatabase,
+			)
+			defer RemoveTestDatabase(&createdDatabase)
+
+			createdDatabase.PostgresqlPhysical.BackupType = postgresql_physical.BackupTypeFullAndIncremental
+
+			updateResponse := test_utils.MakePostRequest(
+				t,
+				router,
+				"/api/v1/databases/update",
+				"Bearer "+owner.Token,
+				createdDatabase,
+				http.StatusBadRequest,
+			)
+
+			assert.Contains(t, string(updateResponse.Body), string(postgresql_shared.ConnErrWalSummaryDisabled))
+
+			var refetchedDatabase Database
+			test_utils.MakeGetRequestAndUnmarshal(
+				t,
+				router,
+				"/api/v1/databases/"+createdDatabase.ID.String(),
+				"Bearer "+owner.Token,
+				http.StatusOK,
+				&refetchedDatabase,
+			)
+
+			assert.Equal(
+				t,
+				postgresql_physical.BackupTypeFullOnly,
+				refetchedDatabase.PostgresqlPhysical.BackupType,
+			)
+		})
 	}
 }

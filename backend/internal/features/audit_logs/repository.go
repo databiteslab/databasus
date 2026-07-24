@@ -1,10 +1,11 @@
 package audit_logs
 
 import (
-	"databasus-backend/internal/storage"
 	"time"
 
 	"github.com/google/uuid"
+
+	"databasus-backend/internal/storage"
 )
 
 type AuditLogRepository struct{}
@@ -21,7 +22,7 @@ func (r *AuditLogRepository) GetGlobal(
 	limit, offset int,
 	beforeDate *time.Time,
 ) ([]*AuditLogDTO, error) {
-	var auditLogs = make([]*AuditLogDTO, 0)
+	auditLogs := make([]*AuditLogDTO, 0)
 
 	sql := `
 		SELECT 
@@ -37,7 +38,7 @@ func (r *AuditLogRepository) GetGlobal(
 		LEFT JOIN users u ON al.user_id = u.id
 		LEFT JOIN workspaces w ON al.workspace_id = w.id`
 
-	args := []interface{}{}
+	args := []any{}
 
 	if beforeDate != nil {
 		sql += " WHERE al.created_at < ?"
@@ -57,7 +58,7 @@ func (r *AuditLogRepository) GetByUser(
 	limit, offset int,
 	beforeDate *time.Time,
 ) ([]*AuditLogDTO, error) {
-	var auditLogs = make([]*AuditLogDTO, 0)
+	auditLogs := make([]*AuditLogDTO, 0)
 
 	sql := `
 		SELECT 
@@ -74,7 +75,7 @@ func (r *AuditLogRepository) GetByUser(
 		LEFT JOIN workspaces w ON al.workspace_id = w.id
 		WHERE al.user_id = ?`
 
-	args := []interface{}{userID}
+	args := []any{userID}
 
 	if beforeDate != nil {
 		sql += " AND al.created_at < ?"
@@ -94,7 +95,7 @@ func (r *AuditLogRepository) GetByWorkspace(
 	limit, offset int,
 	beforeDate *time.Time,
 ) ([]*AuditLogDTO, error) {
-	var auditLogs = make([]*AuditLogDTO, 0)
+	auditLogs := make([]*AuditLogDTO, 0)
 
 	sql := `
 		SELECT 
@@ -111,7 +112,7 @@ func (r *AuditLogRepository) GetByWorkspace(
 		LEFT JOIN workspaces w ON al.workspace_id = w.id
 		WHERE al.workspace_id = ?`
 
-	args := []interface{}{workspaceID}
+	args := []any{workspaceID}
 
 	if beforeDate != nil {
 		sql += " AND al.created_at < ?"

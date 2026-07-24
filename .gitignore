@@ -1,12 +1,14 @@
-*.dump
-
 ansible/
-postgresus_data/
-postgresus-data/
 databasus-data/
 .env
 pgdata/
-docker-compose.yml
+pgdata-test/
+mysqldata/
+mariadbdata/
+valkey-data/
+victoria-logs-data/
+wal-queue/
+temp/
 node_modules/
 .idea
 /articles
@@ -14,6 +16,13 @@ node_modules/
 .DS_Store
 /scripts
 .vscode/settings.json
+.claude/*
+!.claude/agents/
+!.claude/hooks/
+!.claude/settings.json
+backend/cleanup_test_db.exe
+plans/
+
+.pnpm-store
 
 docker-compose.server.yml
-docker-compose.yml

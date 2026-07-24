@@ -1,8 +1,8 @@
 package email_notifier
 
 import (
+	"context"
 	"crypto/tls"
-	"databasus-backend/internal/util/encryption"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,9 +10,13 @@ import (
 	"net"
 	"net/smtp"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	notifier_models "databasus-backend/internal/features/notifiers/models"
+	"databasus-backend/internal/util/encryption"
 )
 
 const (
@@ -23,13 +27,14 @@ const (
 )
 
 type EmailNotifier struct {
-	NotifierID   uuid.UUID `json:"notifierId"   gorm:"primaryKey;type:uuid;column:notifier_id"`
-	TargetEmail  string    `json:"targetEmail"  gorm:"not null;type:varchar(255);column:target_email"`
-	SMTPHost     string    `json:"smtpHost"     gorm:"not null;type:varchar(255);column:smtp_host"`
-	SMTPPort     int       `json:"smtpPort"     gorm:"not null;column:smtp_port"`
-	SMTPUser     string    `json:"smtpUser"     gorm:"type:varchar(255);column:smtp_user"`
-	SMTPPassword string    `json:"smtpPassword" gorm:"type:varchar(255);column:smtp_password"`
-	From         string    `json:"from"         gorm:"type:varchar(255);column:from_email"`
+	NotifierID           uuid.UUID `json:"notifierId"           gorm:"primaryKey;type:uuid;column:notifier_id"`
+	TargetEmail          string    `json:"targetEmail"          gorm:"not null;type:varchar(255);column:target_email"`
+	SMTPHost             string    `json:"smtpHost"             gorm:"not null;type:varchar(255);column:smtp_host"`
+	SMTPPort             int       `json:"smtpPort"             gorm:"not null;column:smtp_port"`
+	SMTPUser             string    `json:"smtpUser"             gorm:"type:varchar(255);column:smtp_user"`
+	SMTPPassword         string    `json:"smtpPassword"         gorm:"type:varchar(255);column:smtp_password"`
+	From                 string    `json:"from"                 gorm:"type:varchar(255);column:from_email"`
+	IsInsecureSkipVerify bool      `json:"isInsecureSkipVerify" gorm:"default:false;column:is_insecure_skip_verify"`
 }
 
 func (e *EmailNotifier) TableName() string {
@@ -60,12 +65,11 @@ func (e *EmailNotifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (e *EmailNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	_ *slog.Logger,
-	heading string,
-	message string,
+	notification notifier_models.Notification,
 ) error {
 	var smtpPassword string
 	if e.SMTPPassword != "" {
-		decrypted, err := encryptor.Decrypt(e.NotifierID, e.SMTPPassword)
+		decrypted, err := encryptor.Decrypt(e.SMTPPassword)
 		if err != nil {
 			return fmt.Errorf("failed to decrypt SMTP password: %w", err)
 		}
@@ -80,7 +84,7 @@ func (e *EmailNotifier) Send(
 		}
 	}
 
-	emailContent := e.buildEmailContent(heading, message, from)
+	emailContent := e.buildEmailContent(notification.Heading, notification.Message, from)
 	isAuthRequired := e.SMTPUser != "" && smtpPassword != ""
 
 	if e.SMTPPort == ImplicitTLSPort {
@@ -99,6 +103,7 @@ func (e *EmailNotifier) Update(incoming *EmailNotifier) {
 	e.SMTPPort = incoming.SMTPPort
 	e.SMTPUser = incoming.SMTPUser
 	e.From = incoming.From
+	e.IsInsecureSkipVerify = incoming.IsInsecureSkipVerify
 
 	if incoming.SMTPPassword != "" {
 		e.SMTPPassword = incoming.SMTPPassword
@@ -107,7 +112,7 @@ func (e *EmailNotifier) Update(incoming *EmailNotifier) {
 
 func (e *EmailNotifier) EncryptSensitiveData(encryptor encryption.FieldEncryptor) error {
 	if e.SMTPPassword != "" {
-		encrypted, err := encryptor.Encrypt(e.NotifierID, e.SMTPPassword)
+		encrypted, err := encryptor.Encrypt(e.SMTPPassword)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt SMTP password: %w", err)
 		}
@@ -135,13 +140,29 @@ func encodeRFC2047(s string) string {
 	return mime.QEncoding.Encode("UTF-8", s)
 }
 
+// sanitizeHeaderValue strips CR, LF, and NUL to prevent SMTP header injection:
+// a CRLF inside a header value would start a new header (e.g. Bcc:) or
+// terminate the header block, letting an attacker rewrite the envelope.
+func sanitizeHeaderValue(value string) string {
+	value = strings.ReplaceAll(value, "\r", "")
+	value = strings.ReplaceAll(value, "\n", "")
+	value = strings.ReplaceAll(value, "\x00", "")
+
+	return value
+}
+
 func (e *EmailNotifier) buildEmailContent(heading, message, from string) []byte {
+	safeHeading := sanitizeHeaderValue(heading)
+	safeFrom := sanitizeHeaderValue(from)
+	safeTargetEmail := sanitizeHeaderValue(e.TargetEmail)
+	safeSMTPHost := sanitizeHeaderValue(e.SMTPHost)
+
 	// Encode Subject header using RFC 2047 to avoid SMTPUTF8 requirement
 	// This ensures compatibility with SMTP servers that don't support SMTPUTF8
-	encodedSubject := encodeRFC2047(heading)
+	encodedSubject := encodeRFC2047(safeHeading)
 	subject := fmt.Sprintf("Subject: %s\r\n", encodedSubject)
 	dateHeader := fmt.Sprintf("Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
-	messageID := fmt.Sprintf("Message-ID: <%s@%s>\r\n", uuid.New().String(), e.SMTPHost)
+	messageID := fmt.Sprintf("Message-ID: <%s@%s>\r\n", uuid.New().String(), safeSMTPHost)
 
 	mimeHeaders := fmt.Sprintf(
 		"MIME-version: 1.0;\nContent-Type: %s; charset=\"%s\";\n\n",
@@ -150,10 +171,10 @@ func (e *EmailNotifier) buildEmailContent(heading, message, from string) []byte 
 	)
 
 	// Encode From header display name if it contains non-ASCII
-	encodedFrom := encodeRFC2047(from)
+	encodedFrom := encodeRFC2047(safeFrom)
 	fromHeader := fmt.Sprintf("From: %s\r\n", encodedFrom)
 
-	toHeader := fmt.Sprintf("To: %s\r\n", e.TargetEmail)
+	toHeader := fmt.Sprintf("To: %s\r\n", safeTargetEmail)
 
 	return []byte(fromHeader + toHeader + subject + dateHeader + messageID + mimeHeaders + message)
 }
@@ -198,10 +219,13 @@ func (e *EmailNotifier) sendStartTLS(
 
 func (e *EmailNotifier) createImplicitTLSClient() (*smtp.Client, func(), error) {
 	addr := net.JoinHostPort(e.SMTPHost, fmt.Sprintf("%d", e.SMTPPort))
-	tlsConfig := &tls.Config{ServerName: e.SMTPHost}
+	tlsConfig := &tls.Config{
+		ServerName:         e.SMTPHost,
+		InsecureSkipVerify: e.IsInsecureSkipVerify,
+	}
 	dialer := &net.Dialer{Timeout: DefaultTimeout}
 
-	conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+	conn, err := (&tls.Dialer{NetDialer: dialer, Config: tlsConfig}).DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to connect to SMTP server: %w", err)
 	}
@@ -237,7 +261,10 @@ func (e *EmailNotifier) createStartTLSClient() (*smtp.Client, func(), error) {
 	}
 
 	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{ServerName: e.SMTPHost}); err != nil {
+		if err := client.StartTLS(&tls.Config{
+			ServerName:         e.SMTPHost,
+			InsecureSkipVerify: e.IsInsecureSkipVerify,
+		}); err != nil {
 			_ = client.Quit()
 			_ = conn.Close()
 			return nil, nil, fmt.Errorf("STARTTLS failed: %w", err)

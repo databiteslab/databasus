@@ -14,7 +14,7 @@ func Test_RegisterTask_TaskRegisteredSuccessfully(t *testing.T) {
 	manager := taskCancelManager
 
 	taskID := uuid.New()
-	_, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	manager.RegisterTask(taskID, cancel)
@@ -29,7 +29,7 @@ func Test_UnregisterTask_TaskUnregisteredSuccessfully(t *testing.T) {
 	manager := taskCancelManager
 
 	taskID := uuid.New()
-	_, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	manager.RegisterTask(taskID, cancel)
@@ -45,7 +45,7 @@ func Test_CancelTask_OnSameInstance_TaskCancelledViaPubSub(t *testing.T) {
 	manager := taskCancelManager
 
 	taskID := uuid.New()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	cancelled := false
 	var mu sync.Mutex
@@ -79,7 +79,7 @@ func Test_CancelTask_FromDifferentInstance_TaskCancelledOnRunningInstance(t *tes
 	manager2 := taskCancelManager
 
 	taskID := uuid.New()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	cancelled := false
 	var mu sync.Mutex
@@ -131,9 +131,9 @@ func Test_CancelTask_WithMultipleTasks_AllTasksCancelled(t *testing.T) {
 	cancelledFlags := make([]bool, numTasks)
 	var mu sync.Mutex
 
-	for i := 0; i < numTasks; i++ {
+	for i := range numTasks {
 		taskIDs[i] = uuid.New()
-		contexts[i], cancels[i] = context.WithCancel(context.Background())
+		contexts[i], cancels[i] = context.WithCancel(t.Context())
 
 		idx := i
 		wrappedCancel := func() {
@@ -149,7 +149,7 @@ func Test_CancelTask_WithMultipleTasks_AllTasksCancelled(t *testing.T) {
 	manager.StartSubscription()
 	time.Sleep(100 * time.Millisecond)
 
-	for i := 0; i < numTasks; i++ {
+	for i := range numTasks {
 		err := manager.CancelTask(taskIDs[i])
 		assert.NoError(t, err, "Cancel should not return error")
 	}
@@ -157,7 +157,7 @@ func Test_CancelTask_WithMultipleTasks_AllTasksCancelled(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	mu.Lock()
-	for i := 0; i < numTasks; i++ {
+	for i := range numTasks {
 		assert.True(t, cancelledFlags[i], "Task %d should be cancelled", i)
 		assert.Error(t, contexts[i].Err(), "Context %d should be cancelled", i)
 	}
@@ -168,7 +168,7 @@ func Test_CancelTask_AfterUnregister_TaskNotCancelled(t *testing.T) {
 	manager := taskCancelManager
 
 	taskID := uuid.New()
-	_, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	cancelled := false

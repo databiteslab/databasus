@@ -1,11 +1,17 @@
 package restores
 
 import (
-	"databasus-backend/internal/config"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
+
 	audit_logs "databasus-backend/internal/features/audit_logs"
-	"databasus-backend/internal/features/backups/backups"
-	backups_core "databasus-backend/internal/features/backups/backups/core"
-	backups_config "databasus-backend/internal/features/backups/config"
+	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
+	backups_services "databasus-backend/internal/features/backups/backups/services"
+	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/disk"
 	restores_core "databasus-backend/internal/features/restores/core"
@@ -17,19 +23,13 @@ import (
 	workspaces_services "databasus-backend/internal/features/workspaces/services"
 	"databasus-backend/internal/util/encryption"
 	"databasus-backend/internal/util/tools"
-	"errors"
-	"fmt"
-	"log/slog"
-	"time"
-
-	"github.com/google/uuid"
 )
 
 type RestoreService struct {
-	backupService        *backups.BackupService
+	backupService        *backups_services.LogicalBackupService
 	restoreRepository    *restores_core.RestoreRepository
 	storageService       *storages.StorageService
-	backupConfigService  *backups_config.BackupConfigService
+	backupConfigService  *backups_config_logical.BackupConfigService
 	restoreBackupUsecase *usecases.RestoreBackupUsecase
 	databaseService      *databases.DatabaseService
 	logger               *slog.Logger
@@ -40,7 +40,7 @@ type RestoreService struct {
 	taskCancelManager    *tasks_cancellation.TaskCancelManager
 }
 
-func (s *RestoreService) OnBeforeBackupRemove(backup *backups_core.Backup) error {
+func (s *RestoreService) OnBeforeBackupRemove(backup *backups_core_logical.LogicalBackup) error {
 	restores, err := s.restoreRepository.FindByBackupID(backup.ID)
 	if err != nil {
 		return err
@@ -128,13 +128,6 @@ func (s *RestoreService) RestoreBackupWithAuth(
 		return err
 	}
 
-	if config.GetEnv().IsCloud {
-		// in cloud mode we use only single thread mode,
-		// because otherwise we will exhaust local storage
-		// space (instead of streaming from S3 directly to DB)
-		requestDTO.PostgresqlDatabase.CpuCount = 1
-	}
-
 	if err := s.validateVersionCompatibility(backupDatabase, requestDTO); err != nil {
 		return err
 	}
@@ -151,17 +144,17 @@ func (s *RestoreService) RestoreBackupWithAuth(
 
 	// Create restore record with the request configuration
 	restore := restores_core.Restore{
-		ID:                 uuid.New(),
-		Status:             restores_core.RestoreStatusInProgress,
-		BackupID:           backup.ID,
-		Backup:             backup,
-		CreatedAt:          time.Now().UTC(),
-		RestoreDurationMs:  0,
-		FailMessage:        nil,
-		PostgresqlDatabase: requestDTO.PostgresqlDatabase,
-		MysqlDatabase:      requestDTO.MysqlDatabase,
-		MariadbDatabase:    requestDTO.MariadbDatabase,
-		MongodbDatabase:    requestDTO.MongodbDatabase,
+		ID:                        uuid.New(),
+		Status:                    restores_core.RestoreStatusInProgress,
+		BackupID:                  backup.ID,
+		Backup:                    backup,
+		CreatedAt:                 time.Now().UTC(),
+		RestoreDurationMs:         0,
+		FailMessage:               nil,
+		PostgresqlLogicalDatabase: requestDTO.PostgresqlLogicalDatabase,
+		MysqlDatabase:             requestDTO.MysqlDatabase,
+		MariadbDatabase:           requestDTO.MariadbDatabase,
+		MongodbDatabase:           requestDTO.MongodbDatabase,
 	}
 
 	if err := s.restoreRepository.Save(&restore); err != nil {
@@ -170,10 +163,10 @@ func (s *RestoreService) RestoreBackupWithAuth(
 
 	// Prepare database cache with credentials from the request
 	dbCache := &restoring.RestoreDatabaseCache{
-		PostgresqlDatabase: requestDTO.PostgresqlDatabase,
-		MysqlDatabase:      requestDTO.MysqlDatabase,
-		MariadbDatabase:    requestDTO.MariadbDatabase,
-		MongodbDatabase:    requestDTO.MongodbDatabase,
+		PostgresqlLogicalDatabase: requestDTO.PostgresqlLogicalDatabase,
+		MysqlDatabase:             requestDTO.MysqlDatabase,
+		MariadbDatabase:           requestDTO.MariadbDatabase,
+		MongodbDatabase:           requestDTO.MongodbDatabase,
 	}
 
 	// Trigger restore via scheduler
@@ -198,6 +191,54 @@ func (s *RestoreService) RestoreBackupWithAuth(
 	return nil
 }
 
+func (s *RestoreService) CancelRestore(
+	user *users_models.User,
+	restoreID uuid.UUID,
+) error {
+	restore, err := s.restoreRepository.FindByID(restoreID)
+	if err != nil {
+		return err
+	}
+
+	backup, err := s.backupService.GetBackup(restore.BackupID)
+	if err != nil {
+		return err
+	}
+
+	database, err := s.databaseService.GetDatabaseByID(backup.DatabaseID)
+	if err != nil {
+		return err
+	}
+
+	if database.WorkspaceID == nil {
+		return errors.New("cannot cancel restore for database without workspace")
+	}
+
+	canManage, err := s.workspaceService.CanUserManageDBs(*database.WorkspaceID, user)
+	if err != nil {
+		return err
+	}
+	if !canManage {
+		return errors.New("insufficient permissions to cancel restore for this database")
+	}
+
+	if restore.Status != restores_core.RestoreStatusInProgress {
+		return errors.New("restore is not in progress")
+	}
+
+	if err := s.taskCancelManager.CancelTask(restoreID); err != nil {
+		return err
+	}
+
+	s.auditLogService.WriteAuditLog(
+		fmt.Sprintf("Restore cancelled for database: %s", database.Name),
+		&user.ID,
+		database.WorkspaceID,
+	)
+
+	return nil
+}
+
 func (s *RestoreService) validateVersionCompatibility(
 	backupDatabase *databases.Database,
 	requestDTO restores_core.RestoreBackupRequest,
@@ -207,7 +248,6 @@ func (s *RestoreService) validateVersionCompatibility(
 		err := requestDTO.MariadbDatabase.PopulateVersion(
 			s.logger,
 			s.fieldEncryptor,
-			backupDatabase.ID,
 		)
 		if err != nil {
 			return err
@@ -217,17 +257,15 @@ func (s *RestoreService) validateVersionCompatibility(
 		err := requestDTO.MysqlDatabase.PopulateVersion(
 			s.logger,
 			s.fieldEncryptor,
-			backupDatabase.ID,
 		)
 		if err != nil {
 			return err
 		}
 	}
-	if requestDTO.PostgresqlDatabase != nil {
-		err := requestDTO.PostgresqlDatabase.PopulateVersion(
+	if requestDTO.PostgresqlLogicalDatabase != nil {
+		err := requestDTO.PostgresqlLogicalDatabase.PopulateVersion(
 			s.logger,
 			s.fieldEncryptor,
-			backupDatabase.ID,
 		)
 		if err != nil {
 			return err
@@ -237,7 +275,6 @@ func (s *RestoreService) validateVersionCompatibility(
 		err := requestDTO.MongodbDatabase.PopulateVersion(
 			s.logger,
 			s.fieldEncryptor,
-			backupDatabase.ID,
 		)
 		if err != nil {
 			return err
@@ -245,13 +282,13 @@ func (s *RestoreService) validateVersionCompatibility(
 	}
 
 	switch backupDatabase.Type {
-	case databases.DatabaseTypePostgres:
-		if requestDTO.PostgresqlDatabase == nil {
+	case databases.DatabaseTypePostgresLogical:
+		if requestDTO.PostgresqlLogicalDatabase == nil {
 			return errors.New("postgresql database configuration is required for restore")
 		}
 		if tools.IsBackupDbVersionHigherThanRestoreDbVersion(
-			backupDatabase.Postgresql.Version,
-			requestDTO.PostgresqlDatabase.Version,
+			backupDatabase.PostgresqlLogical.Version,
+			requestDTO.PostgresqlLogicalDatabase.Version,
 		) {
 			return errors.New(`backup database version is higher than restore database version. ` +
 				`Should be restored to the same version as the backup database or higher. ` +
@@ -294,23 +331,24 @@ func (s *RestoreService) validateVersionCompatibility(
 				`For example, you can restore MongoDB 6.0 backup to MongoDB 6.0, 7.0 or higher. But cannot restore to 5.0`)
 		}
 	}
+
 	return nil
 }
 
 func (s *RestoreService) validateDiskSpace(
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 	requestDTO restores_core.RestoreBackupRequest,
 ) error {
 	// Only validate disk space for PostgreSQL when file-based restore is needed:
 	// - CPU > 1 (parallel jobs require file)
 	// - IsExcludeExtensions (TOC filtering requires file)
 	// Other databases and PostgreSQL with CPU=1 without extension exclusion stream directly
-	if requestDTO.PostgresqlDatabase == nil {
+	if requestDTO.PostgresqlLogicalDatabase == nil {
 		return nil
 	}
 
-	needsFileBased := requestDTO.PostgresqlDatabase.CpuCount > 1 ||
-		requestDTO.PostgresqlDatabase.IsExcludeExtensions
+	needsFileBased := requestDTO.PostgresqlLogicalDatabase.CpuCount > 1 ||
+		requestDTO.PostgresqlLogicalDatabase.IsExcludeExtensions
 	if !needsFileBased {
 		return nil
 	}
@@ -364,54 +402,6 @@ func (s *RestoreService) validateNoParallelRestores(databaseID uuid.UUID) error 
 			"another restore is already in progress for this database. Please wait for it to complete or cancel it before starting a new restore",
 		)
 	}
-
-	return nil
-}
-
-func (s *RestoreService) CancelRestore(
-	user *users_models.User,
-	restoreID uuid.UUID,
-) error {
-	restore, err := s.restoreRepository.FindByID(restoreID)
-	if err != nil {
-		return err
-	}
-
-	backup, err := s.backupService.GetBackup(restore.BackupID)
-	if err != nil {
-		return err
-	}
-
-	database, err := s.databaseService.GetDatabaseByID(backup.DatabaseID)
-	if err != nil {
-		return err
-	}
-
-	if database.WorkspaceID == nil {
-		return errors.New("cannot cancel restore for database without workspace")
-	}
-
-	canManage, err := s.workspaceService.CanUserManageDBs(*database.WorkspaceID, user)
-	if err != nil {
-		return err
-	}
-	if !canManage {
-		return errors.New("insufficient permissions to cancel restore for this database")
-	}
-
-	if restore.Status != restores_core.RestoreStatusInProgress {
-		return errors.New("restore is not in progress")
-	}
-
-	if err := s.taskCancelManager.CancelTask(restoreID); err != nil {
-		return err
-	}
-
-	s.auditLogService.WriteAuditLog(
-		fmt.Sprintf("Restore cancelled for database: %s", database.Name),
-		&user.ID,
-		database.WorkspaceID,
-	)
 
 	return nil
 }

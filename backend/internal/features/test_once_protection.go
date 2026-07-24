@@ -1,16 +1,17 @@
 package features
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"databasus-backend/internal/features/audit_logs"
-	"databasus-backend/internal/features/backups/backups"
-	"databasus-backend/internal/features/backups/backups/backuping"
-	backups_config "databasus-backend/internal/features/backups/config"
+	backuping_logical "databasus-backend/internal/features/backups/backups/backuping/logical"
+	backuping_physical "databasus-backend/internal/features/backups/backups/backuping/physical"
+	backups_services "databasus-backend/internal/features/backups/backups/services"
+	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
+	backups_config_physical "databasus-backend/internal/features/backups/config/physical"
 	"databasus-backend/internal/features/databases"
 	healthcheck_config "databasus-backend/internal/features/healthcheck/config"
 	"databasus-backend/internal/features/notifiers"
@@ -26,11 +27,17 @@ func Test_SetupDependencies_CalledTwice_LogsWarning(t *testing.T) {
 	audit_logs.SetupDependencies()
 	audit_logs.SetupDependencies()
 
-	backups.SetupDependencies()
-	backups.SetupDependencies()
+	backups_services.SetupDependencies()
+	backups_services.SetupDependencies()
 
-	backups_config.SetupDependencies()
-	backups_config.SetupDependencies()
+	backups_config_logical.SetupDependencies()
+	backups_config_logical.SetupDependencies()
+
+	backups_config_physical.SetupDependencies()
+	backups_config_physical.SetupDependencies()
+
+	backuping_physical.SetupDependencies()
+	backuping_physical.SetupDependencies()
 
 	databases.SetupDependencies()
 	databases.SetupDependencies()
@@ -60,11 +67,9 @@ func Test_SetupDependencies_ConcurrentCalls_Safe(t *testing.T) {
 
 	// Call SetupDependencies concurrently from 10 goroutines
 	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			audit_logs.SetupDependencies()
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -73,8 +78,7 @@ func Test_SetupDependencies_ConcurrentCalls_Safe(t *testing.T) {
 
 // Test_BackgroundService_Run_CalledTwice_Panics verifies Run() panics on duplicate calls
 func Test_BackgroundService_Run_CalledTwice_Panics(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Create a test background service
 	backgroundService := audit_logs.GetAuditLogBackgroundService()
@@ -107,10 +111,9 @@ func Test_BackgroundService_Run_CalledTwice_Panics(t *testing.T) {
 
 // Test_BackupsScheduler_Run_CalledTwice_Panics verifies scheduler panics on duplicate calls
 func Test_BackupsScheduler_Run_CalledTwice_Panics(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
-	scheduler := backuping.GetBackupsScheduler()
+	scheduler := backuping_logical.GetBackupsScheduler()
 
 	// Start first Run() in goroutine
 	go func() {

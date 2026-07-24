@@ -14,10 +14,12 @@ var userService = &UserService{
 	email.GetEmailSMTPSender(),
 	users_repositories.GetPasswordResetRepository(),
 }
+
 var settingsService = &SettingsService{
 	users_repositories.GetUsersSettingsRepository(),
 	nil,
 }
+
 var managementService = &UserManagementService{
 	users_repositories.GetUserRepository(),
 	nil,

@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -n '{hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:\"Before writing any code, invoke the claude-md-reviewer subagent in plan mode on the approved plan file. Resolve every CHANGES REQUIRED finding before implementing.\"}}'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/require-implementation-review.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

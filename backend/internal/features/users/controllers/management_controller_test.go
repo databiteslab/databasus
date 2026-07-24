@@ -5,6 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+
 	"databasus-backend/internal/features/audit_logs"
 	users_dto "databasus-backend/internal/features/users/dto"
 	users_enums "databasus-backend/internal/features/users/enums"
@@ -15,10 +19,6 @@ import (
 	workspaces_dto "databasus-backend/internal/features/workspaces/dto"
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
 	test_utils "databasus-backend/internal/util/testing"
-
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_GetUsersList_WhenUserIsAdmin_ReturnsUsers(t *testing.T) {

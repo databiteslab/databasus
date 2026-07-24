@@ -4,13 +4,13 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	users_enums "databasus-backend/internal/features/users/enums"
 	workspaces_dto "databasus-backend/internal/features/workspaces/dto"
 	workspaces_models "databasus-backend/internal/features/workspaces/models"
 	"databasus-backend/internal/storage"
-
-	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 type MembershipRepository struct{}
@@ -82,7 +82,6 @@ func (r *MembershipRepository) GetUserWorkspaceRole(
 	err := storage.GetDb().
 		Where("workspace_id = ? AND user_id = ?", workspaceID, userID).
 		First(&membership).Error
-
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -102,7 +101,6 @@ func (r *MembershipRepository) GetWorkspaceOwner(
 	err := storage.GetDb().
 		Where("workspace_id = ? AND role = ?", workspaceID, users_enums.WorkspaceRoleOwner).
 		First(&membership).Error
-
 	if err != nil {
 		return nil, err
 	}

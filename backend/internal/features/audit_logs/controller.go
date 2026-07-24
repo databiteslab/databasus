@@ -4,10 +4,10 @@ import (
 	"errors"
 	"net/http"
 
-	user_models "databasus-backend/internal/features/users/models"
-
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	user_models "databasus-backend/internal/features/users/models"
 )
 
 type AuditLogController struct {

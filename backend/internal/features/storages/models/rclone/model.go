@@ -3,7 +3,6 @@ package rclone_storage
 import (
 	"bufio"
 	"context"
-	"databasus-backend/internal/util/encryption"
 	"errors"
 	"fmt"
 	"io"
@@ -13,11 +12,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/rclone/rclone/backend/all"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/operations"
 
-	_ "github.com/rclone/rclone/backend/all"
+	"databasus-backend/internal/util/encryption"
 )
 
 const (
@@ -127,13 +127,15 @@ func (r *RcloneStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileName
 	filePath := r.getFilePath(fileName)
 
 	obj, err := remoteFs.NewObject(ctx, filePath)
-	if err != nil {
+	if errors.Is(err, fs.ErrorObjectNotFound) {
 		return nil
 	}
-
-	err = obj.Remove(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to delete file from rclone: %w", err)
+		return fmt.Errorf("failed to look up file in rclone: %w", err)
+	}
+
+	if err := operations.DeleteFile(ctx, obj); err != nil {
+		return fmt.Errorf("failed to delete file via rclone: %w", err)
 	}
 
 	return nil
@@ -142,6 +144,27 @@ func (r *RcloneStorage) DeleteFile(encryptor encryption.FieldEncryptor, fileName
 func (r *RcloneStorage) Validate(encryptor encryption.FieldEncryptor) error {
 	if r.ConfigContent == "" {
 		return errors.New("rclone config content is required")
+	}
+
+	configContent, err := encryptor.Decrypt(r.ConfigContent)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt rclone config content: %w", err)
+	}
+
+	parsedConfig, err := parseConfigContent(configContent)
+	if err != nil {
+		return fmt.Errorf("failed to parse rclone config: %w", err)
+	}
+
+	if len(parsedConfig) == 0 {
+		return errors.New("rclone config must contain at least one remote section")
+	}
+
+	if len(parsedConfig) > 1 {
+		return fmt.Errorf(
+			"rclone config must contain exactly one remote section, but found %d; create a separate storage for each remote",
+			len(parsedConfig),
+		)
 	}
 
 	return nil
@@ -191,7 +214,7 @@ func (r *RcloneStorage) HideSensitiveData() {
 
 func (r *RcloneStorage) EncryptSensitiveData(encryptor encryption.FieldEncryptor) error {
 	if r.ConfigContent != "" {
-		encrypted, err := encryptor.Encrypt(r.StorageID, r.ConfigContent)
+		encrypted, err := encryptor.Encrypt(r.ConfigContent)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt rclone config content: %w", err)
 		}
@@ -213,7 +236,7 @@ func (r *RcloneStorage) getFs(
 	ctx context.Context,
 	encryptor encryption.FieldEncryptor,
 ) (fs.Fs, error) {
-	configContent, err := encryptor.Decrypt(r.StorageID, r.ConfigContent)
+	configContent, err := encryptor.Decrypt(r.ConfigContent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt rclone config content: %w", err)
 	}
@@ -228,6 +251,13 @@ func (r *RcloneStorage) getFs(
 
 	if len(parsedConfig) == 0 {
 		return nil, errors.New("rclone config must contain at least one remote section")
+	}
+
+	if len(parsedConfig) > 1 {
+		return nil, fmt.Errorf(
+			"rclone config must contain exactly one remote section, but found %d; create a separate storage for each remote",
+			len(parsedConfig),
+		)
 	}
 
 	var remoteName string

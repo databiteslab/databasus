@@ -112,6 +112,7 @@ export function EditNotifierComponent({
         smtpUser: '',
         smtpPassword: '',
         from: '',
+        isInsecureSkipVerify: false,
       };
     }
 

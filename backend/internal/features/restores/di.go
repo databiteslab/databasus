@@ -2,12 +2,11 @@ package restores
 
 import (
 	"sync"
-	"sync/atomic"
 
 	audit_logs "databasus-backend/internal/features/audit_logs"
-	"databasus-backend/internal/features/backups/backups"
-	"databasus-backend/internal/features/backups/backups/backuping"
-	backups_config "databasus-backend/internal/features/backups/config"
+	backuping_logical "databasus-backend/internal/features/backups/backups/backuping/logical"
+	backups_services "databasus-backend/internal/features/backups/backups/services"
+	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/disk"
 	restores_core "databasus-backend/internal/features/restores/core"
@@ -19,21 +18,24 @@ import (
 	"databasus-backend/internal/util/logger"
 )
 
-var restoreRepository = &restores_core.RestoreRepository{}
-var restoreService = &RestoreService{
-	backups.GetBackupService(),
-	restoreRepository,
-	storages.GetStorageService(),
-	backups_config.GetBackupConfigService(),
-	usecases.GetRestoreBackupUsecase(),
-	databases.GetDatabaseService(),
-	logger.GetLogger(),
-	workspaces_services.GetWorkspaceService(),
-	audit_logs.GetAuditLogService(),
-	encryption.GetFieldEncryptor(),
-	disk.GetDiskService(),
-	tasks_cancellation.GetTaskCancelManager(),
-}
+var (
+	restoreRepository = &restores_core.RestoreRepository{}
+	restoreService    = &RestoreService{
+		backups_services.GetBackupService(),
+		restoreRepository,
+		storages.GetStorageService(),
+		backups_config_logical.GetBackupConfigService(),
+		usecases.GetRestoreBackupUsecase(),
+		databases.GetDatabaseService(),
+		logger.GetLogger(),
+		workspaces_services.GetWorkspaceService(),
+		audit_logs.GetAuditLogService(),
+		encryption.GetFieldEncryptor(),
+		disk.GetDiskService(),
+		tasks_cancellation.GetTaskCancelManager(),
+	}
+)
+
 var restoreController = &RestoreController{
 	restoreService,
 }
@@ -42,22 +44,7 @@ func GetRestoreController() *RestoreController {
 	return restoreController
 }
 
-var (
-	setupOnce sync.Once
-	isSetup   atomic.Bool
-)
-
-func SetupDependencies() {
-	wasAlreadySetup := isSetup.Load()
-
-	setupOnce.Do(func() {
-		backups.GetBackupService().AddBackupRemoveListener(restoreService)
-		backuping.GetBackupCleaner().AddBackupRemoveListener(restoreService)
-
-		isSetup.Store(true)
-	})
-
-	if wasAlreadySetup {
-		logger.GetLogger().Warn("SetupDependencies called multiple times, ignoring subsequent call")
-	}
-}
+var SetupDependencies = sync.OnceFunc(func() {
+	backups_services.GetBackupService().AddBackupRemoveListener(restoreService)
+	backuping_logical.GetBackupCleaner().AddBackupRemoveListener(restoreService)
+})

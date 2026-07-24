@@ -13,6 +13,13 @@ type EmailCall struct {
 	Body    string
 }
 
+func NewMockEmailSender() *MockEmailSender {
+	return &MockEmailSender{
+		SentEmails: []EmailCall{},
+		ShouldFail: false,
+	}
+}
+
 func (m *MockEmailSender) SendEmail(to, subject, body string) error {
 	m.SentEmails = append(m.SentEmails, EmailCall{
 		To:      to,
@@ -23,11 +30,4 @@ func (m *MockEmailSender) SendEmail(to, subject, body string) error {
 		return errors.New("mock email send failure")
 	}
 	return nil
-}
-
-func NewMockEmailSender() *MockEmailSender {
-	return &MockEmailSender{
-		SentEmails: []EmailCall{},
-		ShouldFail: false,
-	}
 }

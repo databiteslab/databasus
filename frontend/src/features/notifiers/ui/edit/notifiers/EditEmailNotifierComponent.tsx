@@ -1,5 +1,6 @@
-import { InfoCircleOutlined } from '@ant-design/icons';
-import { Input, Tooltip } from 'antd';
+import { DownOutlined, InfoCircleOutlined, UpOutlined } from '@ant-design/icons';
+import { Checkbox, Input, Tooltip } from 'antd';
+import { useState } from 'react';
 
 import type { Notifier } from '../../../../../entity/notifiers';
 
@@ -10,6 +11,9 @@ interface Props {
 }
 
 export function EditEmailNotifierComponent({ notifier, setNotifier, setUnsaved }: Props) {
+  const hasAdvancedValues = !!notifier?.emailNotifier?.isInsecureSkipVerify;
+  const [showAdvanced, setShowAdvanced] = useState(hasAdvancedValues);
+
   return (
     <>
       <div className="mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
@@ -163,6 +167,53 @@ export function EditEmailNotifierComponent({ notifier, setNotifier, setUnsaved }
           </Tooltip>
         </div>
       </div>
+
+      <div className="mt-4 mb-3 flex items-center">
+        <div
+          className="flex cursor-pointer items-center text-sm text-blue-600 hover:text-blue-800"
+          onClick={() => setShowAdvanced(!showAdvanced)}
+        >
+          <span className="mr-2">Advanced settings</span>
+
+          {showAdvanced ? (
+            <UpOutlined style={{ fontSize: '12px' }} />
+          ) : (
+            <DownOutlined style={{ fontSize: '12px' }} />
+          )}
+        </div>
+      </div>
+
+      {showAdvanced && (
+        <div className="mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
+          <div className="mb-1 min-w-[150px] sm:mb-0">Skip TLS verify</div>
+          <div className="flex items-center">
+            <Checkbox
+              checked={notifier?.emailNotifier?.isInsecureSkipVerify || false}
+              onChange={(e) => {
+                if (!notifier?.emailNotifier) return;
+
+                setNotifier({
+                  ...notifier,
+                  emailNotifier: {
+                    ...notifier.emailNotifier,
+                    isInsecureSkipVerify: e.target.checked,
+                  },
+                });
+                setUnsaved();
+              }}
+            >
+              Skip TLS
+            </Checkbox>
+
+            <Tooltip
+              className="cursor-pointer"
+              title="Skip TLS certificate verification. Enable this if your SMTP server uses a self-signed certificate. Warning: this reduces security."
+            >
+              <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
+            </Tooltip>
+          </div>
+        </div>
+      )}
     </>
   );
 }

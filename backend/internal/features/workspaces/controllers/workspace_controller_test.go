@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+
 	audit_logs "databasus-backend/internal/features/audit_logs"
 	users_dto "databasus-backend/internal/features/users/dto"
 	users_enums "databasus-backend/internal/features/users/enums"
@@ -15,9 +18,6 @@ import (
 	workspaces_models "databasus-backend/internal/features/workspaces/models"
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
 	test_utils "databasus-backend/internal/util/testing"
-
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_CreateWorkspace_PermissionsEnforced(t *testing.T) {

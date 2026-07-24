@@ -3,22 +3,10 @@ package storages
 import (
 	"bytes"
 	"context"
-	"databasus-backend/internal/config"
-	azure_blob_storage "databasus-backend/internal/features/storages/models/azure_blob"
-	ftp_storage "databasus-backend/internal/features/storages/models/ftp"
-	google_drive_storage "databasus-backend/internal/features/storages/models/google_drive"
-	local_storage "databasus-backend/internal/features/storages/models/local"
-	nas_storage "databasus-backend/internal/features/storages/models/nas"
-	rclone_storage "databasus-backend/internal/features/storages/models/rclone"
-	s3_storage "databasus-backend/internal/features/storages/models/s3"
-	sftp_storage "databasus-backend/internal/features/storages/models/sftp"
-	"databasus-backend/internal/util/encryption"
-	"databasus-backend/internal/util/logger"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -28,6 +16,17 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	azure_blob_storage "databasus-backend/internal/features/storages/models/azure_blob"
+	ftp_storage "databasus-backend/internal/features/storages/models/ftp"
+	local_storage "databasus-backend/internal/features/storages/models/local"
+	nas_storage "databasus-backend/internal/features/storages/models/nas"
+	rclone_storage "databasus-backend/internal/features/storages/models/rclone"
+	s3_storage "databasus-backend/internal/features/storages/models/s3"
+	sftp_storage "databasus-backend/internal/features/storages/models/sftp"
+	"databasus-backend/internal/util/encryption"
+	"databasus-backend/internal/util/logger"
+	"databasus-backend/internal/util/testing/containers"
 )
 
 type S3Container struct {
@@ -48,48 +47,24 @@ type AzuriteContainer struct {
 }
 
 func Test_Storage_BasicOperations(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
-	validateEnvVariables(t)
+	minioEndpoint := containers.StartMinio(t)
+	azuriteEndpoint := containers.StartAzurite(t)
+	nasEndpoint := containers.StartSamba(t)
+	ftpEndpoint := containers.StartFtp(t)
+	sftpEndpoint := containers.StartSftp(t)
 
-	// Setup S3 connection to docker-compose MinIO
-	s3Container, err := setupS3Container(ctx)
+	s3Container, err := setupS3Container(ctx, addressOf(minioEndpoint))
 	require.NoError(t, err, "Failed to setup S3 container")
 
-	// Setup Azurite connection
-	azuriteContainer, err := setupAzuriteContainer(ctx)
+	azuriteContainer, err := setupAzuriteContainer(ctx, addressOf(azuriteEndpoint))
 	require.NoError(t, err, "Failed to setup Azurite container")
 
-	// Setup test file
 	testFilePath, err := setupTestFile()
 	require.NoError(t, err, "Failed to setup test file")
 	defer os.Remove(testFilePath)
 
-	// Setup NAS port
-	nasPort := 445
-	if portStr := config.GetEnv().TestNASPort; portStr != "" {
-		if port, err := strconv.Atoi(portStr); err == nil {
-			nasPort = port
-		}
-	}
-
-	// Setup FTP port
-	ftpPort := 21
-	if portStr := config.GetEnv().TestFTPPort; portStr != "" {
-		if port, err := strconv.Atoi(portStr); err == nil {
-			ftpPort = port
-		}
-	}
-
-	// Setup SFTP port
-	sftpPort := 22
-	if portStr := config.GetEnv().TestSFTPPort; portStr != "" {
-		if port, err := strconv.Atoi(portStr); err == nil {
-			sftpPort = port
-		}
-	}
-
-	// Run tests
 	testCases := []struct {
 		name    string
 		storage StorageFileSaver
@@ -110,14 +85,26 @@ func Test_Storage_BasicOperations(t *testing.T) {
 			},
 		},
 		{
+			name: "S3Storage_WithStorageClass",
+			storage: &s3_storage.S3Storage{
+				StorageID:      uuid.New(),
+				S3Bucket:       s3Container.bucketName,
+				S3Region:       s3Container.region,
+				S3AccessKey:    s3Container.accessKey,
+				S3SecretKey:    s3Container.secretKey,
+				S3Endpoint:     "http://" + s3Container.endpoint,
+				S3StorageClass: s3_storage.S3StorageClassStandard,
+			},
+		},
+		{
 			name: "NASStorage",
 			storage: &nas_storage.NASStorage{
 				StorageID: uuid.New(),
-				Host:      config.GetEnv().TestLocalhost,
-				Port:      nasPort,
-				Share:     "backups",
-				Username:  "testuser",
-				Password:  "testpassword",
+				Host:      nasEndpoint.Host,
+				Port:      nasEndpoint.Port,
+				Share:     containers.SambaShare,
+				Username:  containers.SambaUsername,
+				Password:  containers.SambaPassword,
 				UseSSL:    false,
 				Domain:    "",
 				Path:      "test-files",
@@ -147,10 +134,10 @@ func Test_Storage_BasicOperations(t *testing.T) {
 			name: "FTPStorage",
 			storage: &ftp_storage.FTPStorage{
 				StorageID: uuid.New(),
-				Host:      config.GetEnv().TestLocalhost,
-				Port:      ftpPort,
-				Username:  "testuser",
-				Password:  "testpassword",
+				Host:      ftpEndpoint.Host,
+				Port:      ftpEndpoint.Port,
+				Username:  containers.FtpUsername,
+				Password:  containers.FtpPassword,
 				UseSSL:    false,
 				Path:      "test-files",
 			},
@@ -159,12 +146,12 @@ func Test_Storage_BasicOperations(t *testing.T) {
 			name: "SFTPStorage",
 			storage: &sftp_storage.SFTPStorage{
 				StorageID:         uuid.New(),
-				Host:              config.GetEnv().TestLocalhost,
-				Port:              sftpPort,
-				Username:          "testuser",
-				Password:          "testpassword",
+				Host:              sftpEndpoint.Host,
+				Port:              sftpEndpoint.Port,
+				Username:          containers.SftpUsername,
+				Password:          containers.SftpPassword,
 				SkipHostKeyVerify: true,
-				Path:              "upload",
+				Path:              containers.SftpUploadDir,
 			},
 		},
 		{
@@ -181,28 +168,6 @@ acl = private`, s3Container.accessKey, s3Container.secretKey, s3Container.endpoi
 				RemotePath: s3Container.bucketName,
 			},
 		},
-	}
-
-	// Add Google Drive storage test only if environment variables are available
-	env := config.GetEnv()
-	if env.IsSkipExternalResourcesTests {
-		t.Log("Skipping Google Drive storage test: IS_SKIP_EXTERNAL_RESOURCES_TESTS=true")
-	} else if env.TestGoogleDriveClientID != "" && env.TestGoogleDriveClientSecret != "" &&
-		env.TestGoogleDriveTokenJSON != "" {
-		testCases = append(testCases, struct {
-			name    string
-			storage StorageFileSaver
-		}{
-			name: "GoogleDriveStorage",
-			storage: &google_drive_storage.GoogleDriveStorage{
-				StorageID:    uuid.New(),
-				ClientID:     env.TestGoogleDriveClientID,
-				ClientSecret: env.TestGoogleDriveClientSecret,
-				TokenJSON:    env.TestGoogleDriveTokenJSON,
-			},
-		})
-	} else {
-		t.Log("Skipping Google Drive storage test: missing environment variables")
 	}
 
 	for _, tc := range testCases {
@@ -226,7 +191,7 @@ acl = private`, s3Container.accessKey, s3Container.secretKey, s3Container.endpoi
 				fileID := uuid.New()
 
 				err = tc.storage.SaveFile(
-					context.Background(),
+					t.Context(),
 					encryptor,
 					logger.GetLogger(),
 					fileID.String(),
@@ -249,7 +214,7 @@ acl = private`, s3Container.accessKey, s3Container.secretKey, s3Container.endpoi
 
 				fileID := uuid.New()
 				err = tc.storage.SaveFile(
-					context.Background(),
+					t.Context(),
 					encryptor,
 					logger.GetLogger(),
 					fileID.String(),
@@ -268,7 +233,6 @@ acl = private`, s3Container.accessKey, s3Container.secretKey, s3Container.endpoi
 			})
 
 			t.Run("Test_TestDeleteNonExistentFile_DoesNotError", func(t *testing.T) {
-				// Try to delete a non-existent file
 				nonExistentID := uuid.New()
 				err := tc.storage.DeleteFile(encryptor, nonExistentID.String())
 				assert.NoError(t, err, "DeleteFile should not error for non-existent file")
@@ -277,13 +241,16 @@ acl = private`, s3Container.accessKey, s3Container.secretKey, s3Container.endpoi
 	}
 }
 
+func addressOf(endpoint containers.Endpoint) string {
+	return fmt.Sprintf("%s:%d", endpoint.Host, endpoint.Port)
+}
+
 func setupTestFile() (string, error) {
 	tempDir := os.TempDir()
 	testFilePath := filepath.Join(tempDir, "test_file.txt")
 	testData := []byte("This is test data for storage testing")
 
-	// 0644 means: owner can read/write
-	err := os.WriteFile(testFilePath, testData, 0644)
+	err := os.WriteFile(testFilePath, testData, 0o644)
 	if err != nil {
 		return "", fmt.Errorf("failed to create test file: %w", err)
 	}
@@ -291,18 +258,14 @@ func setupTestFile() (string, error) {
 	return testFilePath, nil
 }
 
-// setupS3Container connects to the docker-compose MinIO service
-func setupS3Container(ctx context.Context) (*S3Container, error) {
-	env := config.GetEnv()
-
-	accessKey := "testuser"
-	secretKey := "testpassword"
+// setupS3Container creates the test bucket on the MinIO server at address (host:port).
+func setupS3Container(ctx context.Context, address string) (*S3Container, error) {
+	accessKey := containers.MinioRootUser
+	secretKey := containers.MinioRootPassword
 	bucketName := "test-bucket"
-	region := "us-east-1"
-	endpoint := fmt.Sprintf("%s:%s", env.TestLocalhost, env.TestMinioPort)
+	region := containers.MinioRegion
 
-	// Create MinIO client and ensure bucket exists
-	minioClient, err := minio.New(endpoint, &minio.Options{
+	minioClient, err := minio.New(address, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: false,
 		Region: region,
@@ -311,7 +274,6 @@ func setupS3Container(ctx context.Context) (*S3Container, error) {
 		return nil, fmt.Errorf("failed to create minio client: %w", err)
 	}
 
-	// Create the bucket
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -331,7 +293,7 @@ func setupS3Container(ctx context.Context) (*S3Container, error) {
 	}
 
 	return &S3Container{
-		endpoint:   endpoint,
+		endpoint:   address,
 		accessKey:  accessKey,
 		secretKey:  secretKey,
 		bucketName: bucketName,
@@ -339,32 +301,22 @@ func setupS3Container(ctx context.Context) (*S3Container, error) {
 	}, nil
 }
 
-func setupAzuriteContainer(ctx context.Context) (*AzuriteContainer, error) {
-	env := config.GetEnv()
-
-	accountName := "devstoreaccount1"
-	// this is real testing key for azurite, it's not a real key
-	accountKey := "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
-	serviceURL := fmt.Sprintf(
-		"http://%s:%s/%s",
-		env.TestLocalhost,
-		env.TestAzuriteBlobPort,
-		accountName,
-	)
+// setupAzuriteContainer creates the two blob containers on the Azurite server at address (host:port).
+func setupAzuriteContainer(ctx context.Context, address string) (*AzuriteContainer, error) {
+	accountName := containers.AzuriteAccountName
+	accountKey := containers.AzuriteAccountKey
+	serviceURL := fmt.Sprintf("http://%s/%s", address, accountName)
 	containerNameKey := "test-container-key"
 	containerNameStr := "test-container-connstr"
 
-	// Build explicit connection string for Azurite
 	connectionString := fmt.Sprintf(
-		"DefaultEndpointsProtocol=http;AccountName=%s;AccountKey=%s;BlobEndpoint=http://%s:%s/%s",
+		"DefaultEndpointsProtocol=http;AccountName=%s;AccountKey=%s;BlobEndpoint=http://%s/%s",
 		accountName,
 		accountKey,
-		env.TestLocalhost,
-		env.TestAzuriteBlobPort,
+		address,
 		accountName,
 	)
 
-	// Create client using connection string to set up containers
 	client, err := azblob.NewClientFromConnectionString(connectionString, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create azblob client: %w", err)
@@ -373,17 +325,9 @@ func setupAzuriteContainer(ctx context.Context) (*AzuriteContainer, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Create container for account key auth
-	_, err = client.CreateContainer(ctx, containerNameKey, nil)
-	if err != nil {
-		// Container might already exist, that's okay
-	}
-
-	// Create container for connection string auth
-	_, err = client.CreateContainer(ctx, containerNameStr, nil)
-	if err != nil {
-		// Container might already exist, that's okay
-	}
+	// The containers may already exist on a reused server; an AlreadyExists error is harmless here.
+	_, _ = client.CreateContainer(ctx, containerNameKey, nil)
+	_, _ = client.CreateContainer(ctx, containerNameStr, nil)
 
 	return &AzuriteContainer{
 		endpoint:         serviceURL,
@@ -395,9 +339,127 @@ func setupAzuriteContainer(ctx context.Context) (*AzuriteContainer, error) {
 	}, nil
 }
 
-func validateEnvVariables(t *testing.T) {
-	env := config.GetEnv()
-	assert.NotEmpty(t, env.TestMinioPort, "TEST_MINIO_PORT is empty")
-	assert.NotEmpty(t, env.TestAzuriteBlobPort, "TEST_AZURITE_BLOB_PORT is empty")
-	assert.NotEmpty(t, env.TestNASPort, "TEST_NAS_PORT is empty")
+func Test_RcloneStorage_DeleteFile_WhenAuthFailsOnLookup_ReturnsErrorAndDoesNotDeleteObject(t *testing.T) {
+	ctx := t.Context()
+
+	minioEndpoint := containers.StartMinio(t)
+
+	s3Container, err := setupS3Container(ctx, addressOf(minioEndpoint))
+	require.NoError(t, err)
+
+	minioClient, err := minio.New(s3Container.endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(s3Container.accessKey, s3Container.secretKey, ""),
+		Secure: false,
+		Region: s3Container.region,
+	})
+	require.NoError(t, err)
+
+	fileID := uuid.New().String()
+	testData := []byte("rclone delete bug repro")
+
+	_, err = minioClient.PutObject(
+		ctx,
+		s3Container.bucketName,
+		fileID,
+		bytes.NewReader(testData),
+		int64(len(testData)),
+		minio.PutObjectOptions{},
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = minioClient.RemoveObject(
+			context.Background(),
+			s3Container.bucketName,
+			fileID,
+			minio.RemoveObjectOptions{},
+		)
+	})
+
+	rcloneStorage := &rclone_storage.RcloneStorage{
+		StorageID: uuid.New(),
+		ConfigContent: fmt.Sprintf(`[minio]
+type = s3
+provider = Other
+access_key_id = %s
+secret_access_key = totally-wrong-secret-key
+endpoint = http://%s
+acl = private`, s3Container.accessKey, s3Container.endpoint),
+		RemotePath: s3Container.bucketName,
+	}
+
+	encryptor := encryption.GetFieldEncryptor()
+
+	err = rcloneStorage.DeleteFile(encryptor, fileID)
+	require.Error(t, err)
+
+	_, statErr := minioClient.StatObject(
+		ctx,
+		s3Container.bucketName,
+		fileID,
+		minio.StatObjectOptions{},
+	)
+	assert.NoError(t, statErr)
+}
+
+func Test_StorageUpdate_WhenExistingStorageHasNilS3_AssignsIncomingS3(t *testing.T) {
+	storageID := uuid.New()
+
+	existing := &Storage{
+		ID:        storageID,
+		Type:      StorageTypeS3,
+		Name:      "old name",
+		S3Storage: nil,
+	}
+
+	incoming := &Storage{
+		ID:   storageID,
+		Type: StorageTypeS3,
+		Name: "new name",
+		S3Storage: &s3_storage.S3Storage{
+			StorageID:   storageID,
+			S3Bucket:    "my-bucket",
+			S3Region:    "us-east-1",
+			S3AccessKey: "access",
+			S3SecretKey: "secret",
+		},
+	}
+
+	existing.Update(incoming)
+
+	assert.Equal(t, "new name", existing.Name)
+	assert.NotNil(t, existing.S3Storage)
+	assert.Equal(t, "my-bucket", existing.S3Storage.S3Bucket)
+	assert.Equal(t, "us-east-1", existing.S3Storage.S3Region)
+}
+
+func Test_StorageUpdate_WhenExistingS3IsNil_ValidateDoesNotPanic(t *testing.T) {
+	storageID := uuid.New()
+	encryptor := encryption.GetFieldEncryptor()
+
+	existing := &Storage{
+		ID:        storageID,
+		Type:      StorageTypeS3,
+		Name:      "test",
+		S3Storage: nil,
+	}
+
+	incoming := &Storage{
+		ID:   storageID,
+		Type: StorageTypeS3,
+		Name: "test",
+		S3Storage: &s3_storage.S3Storage{
+			StorageID:   storageID,
+			S3Bucket:    "my-bucket",
+			S3Region:    "us-east-1",
+			S3AccessKey: "access",
+			S3SecretKey: "secret",
+		},
+	}
+
+	existing.Update(incoming)
+
+	assert.NotPanics(t, func() {
+		_ = existing.Validate(encryptor)
+	})
 }

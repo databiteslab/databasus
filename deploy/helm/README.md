@@ -30,6 +30,7 @@ Then open `http://localhost:4005` in your browser.
 | `image.repository` | Docker image       | `databasus/databasus` |
 | `image.tag`        | Image tag          | `latest`                    |
 | `image.pullPolicy` | Image pull policy  | `Always`                    |
+| `imagePullSecrets` | Image pull secrets | `[]`                        |
 | `replicaCount`     | Number of replicas | `1`                         |
 
 ### Custom Root CA
@@ -55,6 +56,47 @@ customRootCA: my-root-ca
 
 The certificate will be mounted to `/etc/ssl/certs/custom-root-ca.crt` and the `SSL_CERT_FILE` environment variable will be set automatically.
 
+### Extra Environment Variables
+
+| Parameter       | Description                                                                       | Default Value |
+| --------------- | --------------------------------------------------------------------------------- | ------------- |
+| `extraEnv`      | Extra env vars on the container; standard Kubernetes EnvVar shape.                | `[]`          |
+| `extraEnvFrom`  | Extra envFrom sources; standard Kubernetes EnvFromSource (secretRef/configMapRef).| `[]`          |
+
+Use `extraEnv` for arbitrary container env injection — for example, disabling anonymous telemetry in air-gapped or compliance-restricted clusters:
+
+```yaml
+extraEnv:
+  - name: IS_DISABLE_ANONYMOUS_TELEMETRY
+    value: "true"
+```
+
+Or pull a secret value into the container:
+
+```yaml
+extraEnv:
+  - name: SOME_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: databasus-extras
+        key: token
+```
+
+Use `extraEnvFrom` to mount entire Secrets/ConfigMaps as env (handy with External Secrets Operator or the secrets-store-csi-driver):
+
+```yaml
+extraEnvFrom:
+  - secretRef:
+      name: databasus-extras
+  - configMapRef:
+      name: databasus-extras-cm
+```
+
+Notes:
+
+- Env values must be strings. Use quoted `"true"` / `"false"` rather than bare booleans, and pass `--set-string` on the CLI (e.g. `--set-string 'extraEnv[0].value=true'`) to avoid Kubernetes rejecting non-string values.
+- `extraEnv` is appended after `SSL_CERT_FILE` (when `customRootCA` is set), so an entry with the same name will override `SSL_CERT_FILE`. Avoid duplicate `name` entries unless that override is intentional.
+
 ### Service
 
 | Parameter                  | Description             | Default Value |
@@ -73,6 +115,7 @@ The certificate will be mounted to `/etc/ssl/certs/custom-root-ca.crt` and the `
 | `persistence.accessMode`       | Access mode               | `ReadWriteOnce`        |
 | `persistence.size`             | Storage size              | `10Gi`                 |
 | `persistence.mountPath`        | Mount path                | `/databasus-data`     |
+| `persistence.annotations`      | Annotations for the PVC   | `{}`                   |
 
 ### Resources
 
@@ -224,6 +267,8 @@ helm install databasus oci://ghcr.io/databasus/charts/databasus \
 persistence:
   size: 50Gi
   storageClassName: "fast-ssd"
+  annotations:
+    k8up.io/backup: "false"
 ```
 
 ```bash
@@ -231,6 +276,75 @@ helm install databasus oci://ghcr.io/databasus/charts/databasus \
   -n databasus --create-namespace \
   -f storage-values.yaml
 ```
+
+## Pod Security / Hardening
+
+On a cluster that enforces the restricted Pod Security Standard (or runs scanners
+like Kyverno, Kubescape or Polaris), tune the following values.
+
+| Parameter                                    | Description                                              | Default Value |
+| -------------------------------------------- | -------------------------------------------------------- | ------------- |
+| `serviceAccount.create`                      | Provision a dedicated ServiceAccount                     | `false`       |
+| `serviceAccount.name`                        | Override the ServiceAccount name (else default/fullname) | `""`          |
+| `serviceAccount.annotations`                 | Annotations for the created ServiceAccount               | `{}`          |
+| `serviceAccount.automountServiceAccountToken`| Mount the SA token into the pod                          | `false`       |
+| `podSecurityContext`                         | Pod-level security context                               | `{}`          |
+| `securityContext`                            | Container-level security context                         | `{}`          |
+| `podAnnotations`                             | Pod annotations (e.g. AppArmor profile)                  | `{}`          |
+| `extraVolumes` / `extraVolumeMounts`         | Extra volumes/mounts (e.g. emptyDir for read-only rootfs)| `[]`          |
+
+The app does **not** automount the ServiceAccount token by default
+(`automountServiceAccountToken: false`), which clears the common
+`AutomountServiceAccountTokenTrueAndDefaultSA` finding even on the namespace
+`default` ServiceAccount.
+
+A restricted-PSS values example wiring seccomp, no privilege escalation, AppArmor,
+a dedicated ServiceAccount and a read-only root filesystem:
+
+```yaml
+# hardened-values.yaml
+serviceAccount:
+  create: true
+
+podAnnotations:
+  container.apparmor.security.beta.kubernetes.io/databasus: runtime/default
+
+podSecurityContext:
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop:
+      - ALL
+    # gosu drops privileges from the root entrypoint; these are required.
+    add:
+      - SETUID
+      - SETGID
+
+# Writable paths required while the root filesystem is read-only.
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+  - name: var-run
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+  - name: var-run
+    mountPath: /var/run
+```
+
+> **Not supported by design:** `runAsNonRoot: true` and dropping **all**
+> capabilities. The entrypoint must start as root to handle PUID/PGID remapping,
+> volume `chown` and PostgreSQL `initdb`, then drops to a non-root user with
+> `gosu` (which requires `SETUID`/`SETGID`). See the note in `values.yaml`
+> next to `podSecurityContext`.
 
 ## Upgrade
 
