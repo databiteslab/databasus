@@ -3,10 +3,10 @@ package workspaces_repositories
 import (
 	"time"
 
+	"github.com/google/uuid"
+
 	workspaces_models "databasus-backend/internal/features/workspaces/models"
 	"databasus-backend/internal/storage"
-
-	"github.com/google/uuid"
 )
 
 type WorkspaceRepository struct{}

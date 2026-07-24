@@ -1,10 +1,10 @@
 package notifiers
 
 import (
-	"databasus-backend/internal/storage"
-
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+
+	"databasus-backend/internal/storage"
 )
 
 type NotifierRepository struct{}
@@ -13,7 +13,6 @@ func (r *NotifierRepository) Save(notifier *Notifier) (*Notifier, error) {
 	db := storage.GetDb()
 
 	err := db.Transaction(func(tx *gorm.DB) error {
-
 		switch notifier.NotifierType {
 		case NotifierTypeTelegram:
 			if notifier.TelegramNotifier != nil {
@@ -116,7 +115,6 @@ func (r *NotifierRepository) Save(notifier *Notifier) (*Notifier, error) {
 
 		return nil
 	})
-
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +139,16 @@ func (r *NotifierRepository) FindByID(id uuid.UUID) (*Notifier, error) {
 	}
 
 	return &notifier, nil
+}
+
+func (r *NotifierRepository) GetAllNotifiers() ([]*Notifier, error) {
+	var notifiers []*Notifier
+
+	if err := storage.GetDb().Find(&notifiers).Error; err != nil {
+		return nil, err
+	}
+
+	return notifiers, nil
 }
 
 func (r *NotifierRepository) FindByWorkspaceID(workspaceID uuid.UUID) ([]*Notifier, error) {

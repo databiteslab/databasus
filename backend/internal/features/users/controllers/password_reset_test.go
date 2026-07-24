@@ -5,6 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"golang.org/x/crypto/bcrypt"
+
 	users_dto "databasus-backend/internal/features/users/dto"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_models "databasus-backend/internal/features/users/models"
@@ -12,10 +16,6 @@ import (
 	users_testing "databasus-backend/internal/features/users/testing"
 	"databasus-backend/internal/storage"
 	test_utils "databasus-backend/internal/util/testing"
-
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func Test_SendResetPasswordCode_WithValidEmail_CodeSent(t *testing.T) {
@@ -539,7 +539,7 @@ func extractCodeFromEmail(emailBody string) string {
 	// Look for pattern: <h1 ... >CODE</h1>
 	// First find <h1
 	h1Start := 0
-	for i := 0; i < len(emailBody)-3; i++ {
+	for i := range len(emailBody) - 3 {
 		if emailBody[i:i+3] == "<h1" {
 			h1Start = i
 			break
@@ -575,7 +575,7 @@ func extractCodeFromEmail(emailBody string) string {
 	// Extract content and remove whitespace
 	content := emailBody[contentStart:contentEnd]
 	code := ""
-	for i := 0; i < len(content); i++ {
+	for i := range len(content) {
 		if isDigit(content[i]) {
 			code += string(content[i])
 		}

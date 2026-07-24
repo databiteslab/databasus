@@ -3,21 +3,33 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 	"time"
 
+	"github.com/gin-contrib/cors"
+	"github.com/gin-contrib/gzip"
+	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+
 	"databasus-backend/internal/config"
 	"databasus-backend/internal/features/audit_logs"
-	"databasus-backend/internal/features/backups/backups"
-	"databasus-backend/internal/features/backups/backups/backuping"
+	"databasus-backend/internal/features/backups/backups/backuping/logical"
+	backuping_physical "databasus-backend/internal/features/backups/backups/backuping/physical"
+	backups_controllers_logical "databasus-backend/internal/features/backups/backups/controllers/logical"
+	backups_controllers_physical "databasus-backend/internal/features/backups/backups/controllers/physical"
 	backups_download "databasus-backend/internal/features/backups/backups/download"
-	backups_config "databasus-backend/internal/features/backups/config"
+	backups_services "databasus-backend/internal/features/backups/backups/services"
+	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
+	backups_config_physical "databasus-backend/internal/features/backups/config/physical"
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/disk"
 	"databasus-backend/internal/features/encryption/secrets"
@@ -27,23 +39,24 @@ import (
 	"databasus-backend/internal/features/restores"
 	"databasus-backend/internal/features/restores/restoring"
 	"databasus-backend/internal/features/storages"
+	system_agent "databasus-backend/internal/features/system/agent"
 	system_healthcheck "databasus-backend/internal/features/system/healthcheck"
+	system_version "databasus-backend/internal/features/system/version"
 	task_cancellation "databasus-backend/internal/features/tasks/cancellation"
+	"databasus-backend/internal/features/telemetry"
 	users_controllers "databasus-backend/internal/features/users/controllers"
 	users_middleware "databasus-backend/internal/features/users/middleware"
 	users_services "databasus-backend/internal/features/users/services"
+	verification_agents "databasus-backend/internal/features/verification/agents"
+	verification_config "databasus-backend/internal/features/verification/config"
+	verification_runs "databasus-backend/internal/features/verification/runs"
 	workspaces_controllers "databasus-backend/internal/features/workspaces/controllers"
+	"databasus-backend/internal/middleware"
 	cache_utils "databasus-backend/internal/util/cache"
 	env_utils "databasus-backend/internal/util/env"
 	files_utils "databasus-backend/internal/util/files"
 	"databasus-backend/internal/util/logger"
 	_ "databasus-backend/swagger" // swagger docs
-
-	"github.com/gin-contrib/cors"
-	"github.com/gin-contrib/gzip"
-	"github.com/gin-gonic/gin"
-	swaggerFiles "github.com/swaggo/files"
-	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
 // @title Databasus Backend API
@@ -54,33 +67,34 @@ import (
 // @host localhost:4005
 // @BasePath /api/v1
 // @schemes http
+
+const serverAddr = ":4005"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		runHealthcheckCommand() // exits the process
+		return
+	}
+
 	log := logger.GetLogger()
 
 	cache_utils.TestCacheConnection()
 
-	if config.GetEnv().IsPrimaryNode {
-		log.Info("Clearing cache...")
+	log.Info("Clearing cache...")
 
-		err := cache_utils.ClearAllCache()
-		if err != nil {
-			log.Error("Failed to clear cache", "error", err)
-			os.Exit(1)
-		}
+	err := cache_utils.ClearAllCache()
+	if err != nil {
+		log.Error("Failed to clear cache", "error", err)
+		os.Exit(1)
 	}
 
-	if config.GetEnv().IsPrimaryNode {
-		runMigrations(log)
-	} else {
-		log.Info("Skipping migrations (IS_PRIMARY_NODE is false)")
-	}
+	runMigrations(log)
 
 	// create directories that used for backups and restore
-	err := files_utils.EnsureDirectories([]string{
+	err = files_utils.EnsureDirectories([]string{
 		config.GetEnv().TempFolder,
 		config.GetEnv().DataFolder,
 	})
-
 	if err != nil {
 		log.Error("Failed to ensure directories", "error", err)
 		os.Exit(1)
@@ -103,7 +117,10 @@ func main() {
 	go generateSwaggerDocs(log)
 
 	gin.SetMode(gin.ReleaseMode)
-	ginApp := gin.Default()
+	ginApp := gin.New()
+	ginApp.Use(gin.Logger())
+	ginApp.Use(ginRecoveryWithLogger(log))
+	ginApp.Use(middleware.NoStoreCacheControl())
 
 	// Add GZIP compression middleware
 	ginApp.Use(gzip.Gzip(
@@ -117,6 +134,8 @@ func main() {
 	enableCors(ginApp)
 	setUpRoutes(ginApp)
 	setUpDependencies()
+
+	announceTelemetry()
 
 	runBackgroundTasks(log)
 
@@ -147,7 +166,7 @@ func handlePasswordReset(log *slog.Logger) {
 	resetPassword(*email, *newPassword, log)
 }
 
-func resetPassword(email string, newPassword string, log *slog.Logger) {
+func resetPassword(email, newPassword string, log *slog.Logger) {
 	log.Info("Resetting password...")
 
 	userService := users_services.GetUserService()
@@ -162,15 +181,8 @@ func resetPassword(email string, newPassword string, log *slog.Logger) {
 }
 
 func startServerWithGracefulShutdown(log *slog.Logger, app *gin.Engine) {
-	host := ""
-	if config.GetEnv().EnvMode == env_utils.EnvModeDevelopment {
-		// for dev we use localhost to avoid firewall
-		// requests on each run for Windows
-		host = "127.0.0.1"
-	}
-
 	srv := &http.Server{
-		Addr:    host + ":4005",
+		Addr:    serverAddr,
 		Handler: app,
 	}
 
@@ -186,7 +198,7 @@ func startServerWithGracefulShutdown(log *slog.Logger, app *gin.Engine) {
 	log.Info("Shutdown signal received")
 
 	// Gracefully shutdown VictoriaLogs writer
-	logger.ShutdownVictoriaLogs(5 * time.Second)
+	logger.ShutdownVictoriaLogs()
 
 	// The context is used to inform the server it has 10 seconds to finish
 	// the request it is currently handling
@@ -209,7 +221,13 @@ func setUpRoutes(r *gin.Engine) {
 	userController := users_controllers.GetUserController()
 	userController.RegisterRoutes(v1)
 	system_healthcheck.GetHealthcheckController().RegisterRoutes(v1)
-	backups.GetBackupController().RegisterPublicRoutes(v1)
+	system_version.GetVersionController().RegisterRoutes(v1)
+	system_agent.GetAgentController().RegisterRoutes(v1)
+	backups_controllers_logical.GetBackupController().RegisterPublicRoutes(v1)
+	backups_controllers_physical.GetPhysicalBackupController().RegisterPublicRoutes(v1)
+	databases.GetDatabaseController().RegisterPublicRoutes(v1)
+	verification_agents.GetAgentFacingController().RegisterRoutes(v1)
+	verification_runs.GetVerificationAgentController().RegisterRoutes(v1)
 
 	// Setup auth middleware
 	userService := users_services.GetUserService()
@@ -226,26 +244,48 @@ func setUpRoutes(r *gin.Engine) {
 	notifiers.GetNotifierController().RegisterRoutes(protected)
 	storages.GetStorageController().RegisterRoutes(protected)
 	databases.GetDatabaseController().RegisterRoutes(protected)
-	backups.GetBackupController().RegisterRoutes(protected)
+	backups_controllers_logical.GetBackupController().RegisterRoutes(protected)
+	backups_controllers_physical.GetPhysicalBackupController().RegisterRoutes(protected)
 	restores.GetRestoreController().RegisterRoutes(protected)
 	healthcheck_config.GetHealthcheckConfigController().RegisterRoutes(protected)
 	healthcheck_attempt.GetHealthcheckAttemptController().RegisterRoutes(protected)
-	backups_config.GetBackupConfigController().RegisterRoutes(protected)
+	backups_config_logical.GetBackupConfigController().RegisterRoutes(protected)
+	backups_config_physical.GetBackupConfigController().RegisterRoutes(protected)
 	audit_logs.GetAuditLogController().RegisterRoutes(protected)
 	users_controllers.GetManagementController().RegisterRoutes(protected)
 	users_controllers.GetSettingsController().RegisterRoutes(protected)
+	verification_agents.GetAgentController().RegisterRoutes(protected)
+	verification_config.GetVerificationConfigController().RegisterRoutes(protected)
+	verification_runs.GetVerificationController().RegisterRoutes(protected)
 }
 
 func setUpDependencies() {
 	databases.SetupDependencies()
-	backups.SetupDependencies()
+	backups_services.SetupDependencies()
 	restores.SetupDependencies()
 	healthcheck_config.SetupDependencies()
 	audit_logs.SetupDependencies()
 	notifiers.SetupDependencies()
 	storages.SetupDependencies()
-	backups_config.SetupDependencies()
+	backups_config_logical.SetupDependencies()
+	backups_config_physical.SetupDependencies()
+	backuping_physical.SetupDependencies()
+	verification_config.SetupDependencies()
+	verification_runs.SetupDependencies()
 	task_cancellation.SetupDependencies()
+
+	telemetry.SetupDependencies()
+}
+
+func announceTelemetry() {
+	if config.GetEnv().IsDisableAnonymousTelemetry {
+		return
+	}
+
+	fmt.Println(
+		"Anonymous telemetry collected (Databasus version, OS/arch, etc.). No DB contents, no user data. " +
+			"To disable, set IS_DISABLE_ANONYMOUS_TELEMETRY=true in your .env",
+	)
 }
 
 func runBackgroundTasks(log *slog.Logger) {
@@ -268,67 +308,61 @@ func runBackgroundTasks(log *slog.Logger) {
 		log.Error("Failed to clean temp folder", "error", err)
 	}
 
-	if config.GetEnv().IsPrimaryNode {
-		log.Info("Starting primary node background tasks...")
+	log.Info("Starting background tasks...")
 
-		go runWithPanicLogging(log, "backup background service", func() {
-			backuping.GetBackupsScheduler().Run(ctx)
-		})
+	go runWithPanicLogging(log, "backup background service", func() {
+		backuping_logical.GetBackupsScheduler().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "backup cleaner background service", func() {
-			backuping.GetBackupCleaner().Run(ctx)
-		})
+	go runWithPanicLogging(log, "verification scheduler", func() {
+		verification_runs.GetVerificationScheduler().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "stale pg_dump session watchdog", func() {
-			backuping.GetStaleSessionWatchdog().Run(ctx)
-		})
+	go runWithPanicLogging(log, "backup cleaner background service", func() {
+		backuping_logical.GetBackupCleaner().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "restore background service", func() {
-			restoring.GetRestoresScheduler().Run(ctx)
-		})
+	go runWithPanicLogging(log, "stale pg_dump session watchdog", func() {
+		backuping_logical.GetStaleSessionWatchdog().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "healthcheck attempt background service", func() {
-			healthcheck_attempt.GetHealthcheckAttemptBackgroundService().Run(ctx)
-		})
+	go runWithPanicLogging(log, "physical backup scheduler background service", func() {
+		backuping_physical.GetPhysicalBackupsScheduler().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "audit log cleanup background service", func() {
-			audit_logs.GetAuditLogBackgroundService().Run(ctx)
-		})
+	go runWithPanicLogging(log, "physical backup cleaner background service", func() {
+		backuping_physical.GetPhysicalBackupCleaner().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "download token cleanup background service", func() {
-			backups_download.GetDownloadTokenBackgroundService().Run(ctx)
-		})
+	go runWithPanicLogging(log, "restore background service", func() {
+		restoring.GetRestoresScheduler().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "backup nodes registry background service", func() {
-			backuping.GetBackupNodesRegistry().Run(ctx)
-		})
+	go runWithPanicLogging(log, "healthcheck attempt background service", func() {
+		healthcheck_attempt.GetHealthcheckAttemptBackgroundService().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "restore nodes registry background service", func() {
-			restoring.GetRestoreNodesRegistry().Run(ctx)
-		})
-	} else {
-		log.Info("Skipping primary node tasks as not primary node")
-	}
+	go runWithPanicLogging(log, "audit log cleanup background service", func() {
+		audit_logs.GetAuditLogBackgroundService().Run(ctx)
+	})
 
-	if config.GetEnv().IsProcessingNode {
-		log.Info("Starting backup node background tasks...")
+	go runWithPanicLogging(log, "download token cleanup background service", func() {
+		backups_download.GetDownloadTokenBackgroundService().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "backup node", func() {
-			backuping.GetBackuperNode().Run(ctx)
-		})
+	go runWithPanicLogging(log, "physical wal stream supervisor background service", func() {
+		backuping_physical.GetPhysicalWalStreamSupervisor().Run(ctx)
+	})
 
-		go runWithPanicLogging(log, "restore node", func() {
-			restoring.GetRestorerNode().Run(ctx)
-		})
-	} else {
-		log.Info("Skipping backup/restore node tasks as not backup node")
-	}
+	go runWithPanicLogging(log, "telemetry background service", func() {
+		telemetry.GetTelemetryBackgroundService().Run(ctx)
+	})
 }
 
 func runWithPanicLogging(log *slog.Logger, serviceName string, fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error("Panic in "+serviceName, "error", r)
+			log.Error("Panic in "+serviceName, "error", r, "stacktrace", string(debug.Stack()))
 		}
 	}()
 	fn()
@@ -351,7 +385,9 @@ func generateSwaggerDocs(log *slog.Logger) {
 		return
 	}
 
-	cmd := exec.Command("swag", "init", "-d", currentDir, "-g", "cmd/main.go", "-o", "swagger")
+	cmd := exec.CommandContext(
+		context.Background(), "swag", "init", "-d", currentDir, "-g", "cmd/main.go", "-o", "swagger",
+	)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -365,7 +401,7 @@ func generateSwaggerDocs(log *slog.Logger) {
 func runMigrations(log *slog.Logger) {
 	log.Info("Running database migrations...")
 
-	cmd := exec.Command("goose", "-dir", "./migrations", "up")
+	cmd := exec.CommandContext(context.Background(), "goose", "-dir", "./migrations", "up")
 	cmd.Env = append(
 		os.Environ(),
 		"GOOSE_DRIVER=postgres",
@@ -403,6 +439,25 @@ func enableCors(ginApp *gin.Engine) {
 			},
 			AllowCredentials: true,
 		}))
+	}
+}
+
+func ginRecoveryWithLogger(log *slog.Logger) gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("Panic recovered in HTTP handler",
+					"error", r,
+					"stacktrace", string(debug.Stack()),
+					"method", ctx.Request.Method,
+					"path", ctx.Request.URL.Path,
+				)
+
+				ctx.AbortWithStatus(http.StatusInternalServerError)
+			}
+		}()
+
+		ctx.Next()
 	}
 }
 

@@ -2,7 +2,7 @@ import { LoadingOutlined, MenuOutlined } from '@ant-design/icons';
 import { App, Button, Spin, Tooltip } from 'antd';
 import { useEffect, useState } from 'react';
 
-import { APP_VERSION } from '../../constants';
+import { APP_VERSION, CONTAINER_ARCH } from '../../constants';
 import { type DiskUsage, diskApi } from '../../entity/disk';
 import {
   type UserProfile,
@@ -14,7 +14,6 @@ import {
 import { type WorkspaceResponse, workspaceApi } from '../../entity/workspaces';
 import { DatabasesComponent } from '../../features/databases/ui/DatabasesComponent';
 import { NotifiersComponent } from '../../features/notifiers/ui/NotifiersComponent';
-import { PlaygroundWarningComponent } from '../../features/playground';
 import { SettingsComponent } from '../../features/settings';
 import { StoragesComponent } from '../../features/storages/ui/StoragesComponent';
 import { ProfileComponent } from '../../features/users';
@@ -23,7 +22,7 @@ import {
   CreateWorkspaceDialogComponent,
   WorkspaceSettingsComponent,
 } from '../../features/workspaces';
-import { useIsMobile, useScreenHeight } from '../../shared/hooks';
+import { useIsMobile, useIsNewGitHubVersionAvailable, useScreenHeight } from '../../shared/hooks';
 import { StarButtonComponent } from '../../shared/ui/StarButtonComponent';
 import { ThemeToggleComponent } from '../../shared/ui/ThemeToggleComponent';
 import { SidebarComponent } from './SidebarComponent';
@@ -33,6 +32,7 @@ export const MainScreenComponent = () => {
   const { message } = App.useApp();
   const screenHeight = useScreenHeight();
   const isMobile = useIsMobile();
+  const isNewGitHubVersionAvailable = useIsNewGitHubVersionAvailable();
   const contentHeight = screenHeight - (isMobile ? 70 : 95);
 
   const [selectedTab, setSelectedTab] = useState<
@@ -330,7 +330,6 @@ export const MainScreenComponent = () => {
                     )}
                     {selectedTab === 'storages' && selectedWorkspace && (
                       <StoragesComponent
-                        user={user}
                         contentHeight={contentHeight}
                         workspace={selectedWorkspace}
                         isCanManageStorages={isCanManageDBs}
@@ -341,7 +340,6 @@ export const MainScreenComponent = () => {
                       <DatabasesComponent
                         contentHeight={contentHeight}
                         workspace={selectedWorkspace}
-                        user={user}
                         isCanManageDBs={isCanManageDBs}
                         key={`databases-${selectedWorkspace.id}`}
                       />
@@ -365,6 +363,22 @@ export const MainScreenComponent = () => {
 
           <div className="absolute bottom-1 left-2 mb-[0px] hidden text-sm text-gray-400 md:block">
             v{APP_VERSION}
+            <br />
+            <span className="inline-flex items-center gap-1.5">
+              {CONTAINER_ARCH}
+              {isNewGitHubVersionAvailable && (
+                <Tooltip title="New version available">
+                  <a
+                    href="https://github.com/databasus/databasus/releases/latest"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex"
+                  >
+                    <span className="inline-flex h-2 w-2 rounded-full bg-green-500" />
+                  </a>
+                </Tooltip>
+              )}
+            </span>
           </div>
         </div>
       )}
@@ -379,8 +393,6 @@ export const MainScreenComponent = () => {
           workspacesCount={workspaces.length}
         />
       )}
-
-      <PlaygroundWarningComponent />
     </div>
   );
 };

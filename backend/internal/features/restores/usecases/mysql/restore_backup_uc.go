@@ -18,9 +18,10 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"databasus-backend/internal/config"
-	backups_core "databasus-backend/internal/features/backups/backups/core"
+	backups_core_enums "databasus-backend/internal/features/backups/backups/core/enums"
+	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
 	"databasus-backend/internal/features/backups/backups/encryption"
-	backups_config "databasus-backend/internal/features/backups/config"
+	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
 	"databasus-backend/internal/features/databases"
 	mysqltypes "databasus-backend/internal/features/databases/databases/mysql"
 	encryption_secrets "databasus-backend/internal/features/encryption/secrets"
@@ -39,9 +40,9 @@ func (uc *RestoreMysqlBackupUsecase) Execute(
 	parentCtx context.Context,
 	originalDB *databases.Database,
 	restoringToDB *databases.Database,
-	backupConfig *backups_config.BackupConfig,
+	backupConfig *backups_config_logical.LogicalBackupConfig,
 	restore restores_core.Restore,
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 	storage *storages.Storage,
 ) error {
 	if originalDB.Type != databases.DatabaseTypeMysql {
@@ -70,8 +71,12 @@ func (uc *RestoreMysqlBackupUsecase) Execute(
 		"--verbose",
 	}
 
+	args = append(args, "--max-allowed-packet=1G")
+
 	if my.IsHttps {
 		args = append(args, "--ssl-mode=REQUIRED")
+	} else {
+		args = append(args, "--ssl-mode=DISABLED")
 	}
 
 	if my.Database != nil && *my.Database != "" {
@@ -81,12 +86,7 @@ func (uc *RestoreMysqlBackupUsecase) Execute(
 	return uc.restoreFromStorage(
 		parentCtx,
 		originalDB,
-		tools.GetMysqlExecutable(
-			my.Version,
-			tools.MysqlExecutableMysql,
-			config.GetEnv().EnvMode,
-			config.GetEnv().MysqlInstallDir,
-		),
+		tools.GetMysqlExecutable(my.Version, tools.MysqlExecutableMysql),
 		args,
 		my.Password,
 		backup,
@@ -101,7 +101,7 @@ func (uc *RestoreMysqlBackupUsecase) restoreFromStorage(
 	mysqlBin string,
 	args []string,
 	password string,
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 	storage *storages.Storage,
 	myConfig *mysqltypes.MysqlDatabase,
 ) error {
@@ -128,7 +128,7 @@ func (uc *RestoreMysqlBackupUsecase) restoreFromStorage(
 	}()
 
 	fieldEncryptor := util_encryption.GetFieldEncryptor()
-	decryptedPassword, err := fieldEncryptor.Decrypt(database.ID, password)
+	decryptedPassword, err := fieldEncryptor.Decrypt(password)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt password: %w", err)
 	}
@@ -160,7 +160,7 @@ func (uc *RestoreMysqlBackupUsecase) executeMysqlRestore(
 	args []string,
 	myCnfFile string,
 	backupReader io.ReadCloser,
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 ) error {
 	fullArgs := append([]string{"--defaults-file=" + myCnfFile}, args...)
 
@@ -169,7 +169,7 @@ func (uc *RestoreMysqlBackupUsecase) executeMysqlRestore(
 
 	var inputReader io.Reader = backupReader
 
-	if backup.Encryption == backups_config.BackupEncryptionEncrypted {
+	if backup.Encryption == backups_core_enums.BackupEncryptionEncrypted {
 		decryptReader, err := uc.setupDecryption(backupReader, backup)
 		if err != nil {
 			return fmt.Errorf("failed to setup decryption: %w", err)
@@ -232,7 +232,7 @@ func (uc *RestoreMysqlBackupUsecase) executeMysqlRestore(
 
 func (uc *RestoreMysqlBackupUsecase) setupDecryption(
 	reader io.Reader,
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 ) (io.Reader, error) {
 	if backup.EncryptionSalt == nil || backup.EncryptionIV == nil {
 		return nil, fmt.Errorf("backup is encrypted but missing encryption metadata")
@@ -272,20 +272,14 @@ func (uc *RestoreMysqlBackupUsecase) createTempMyCnfFile(
 	myConfig *mysqltypes.MysqlDatabase,
 	password string,
 ) (string, error) {
-	tempFolder := config.GetEnv().TempFolder
-	if err := os.MkdirAll(tempFolder, 0700); err != nil {
-		return "", fmt.Errorf("failed to ensure temp folder exists: %w", err)
-	}
-	if err := os.Chmod(tempFolder, 0700); err != nil {
-		return "", fmt.Errorf("failed to set temp folder permissions: %w", err)
-	}
-
-	tempDir, err := os.MkdirTemp(tempFolder, "mycnf_"+uuid.New().String())
+	// Credential files use OS temp dir (/tmp) because some filesystems
+	// (e.g. ZFS on TrueNAS) ignore chmod, causing "group or world access" errors.
+	tempDir, err := os.MkdirTemp(os.TempDir(), "mycnf_"+uuid.New().String())
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
-	if err := os.Chmod(tempDir, 0700); err != nil {
+	if err := os.Chmod(tempDir, 0o700); err != nil {
 		_ = os.RemoveAll(tempDir)
 		return "", fmt.Errorf("failed to set temp directory permissions: %w", err)
 	}
@@ -301,9 +295,11 @@ port=%d
 
 	if myConfig.IsHttps {
 		content += "ssl-mode=REQUIRED\n"
+	} else {
+		content += "ssl-mode=DISABLED\n"
 	}
 
-	err = os.WriteFile(myCnfFile, []byte(content), 0600)
+	err = os.WriteFile(myCnfFile, []byte(content), 0o600)
 	if err != nil {
 		_ = os.RemoveAll(tempDir)
 		return "", fmt.Errorf("failed to write .my.cnf: %w", err)

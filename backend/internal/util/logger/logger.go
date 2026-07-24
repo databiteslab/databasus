@@ -14,56 +14,52 @@ import (
 var (
 	loggerInstance     *slog.Logger
 	victoriaLogsWriter *VictoriaLogsWriter
-	once               sync.Once
-	shutdownOnce       sync.Once
-	envLoadOnce        sync.Once
 )
+
+var initLogger = sync.OnceFunc(func() {
+	// Create stdout handler
+	stdoutHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				a.Value = slog.StringValue(time.Now().Format("2006/01/02 15:04:05"))
+			}
+			if a.Key == slog.LevelKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	})
+
+	// Try to initialize VictoriaLogs writer if configured
+	// Note: This will be called before config is fully loaded in some cases,
+	// so we need to handle that gracefully
+	victoriaLogsWriter = tryInitVictoriaLogs()
+
+	// Create multi-handler
+	multiHandler := NewMultiHandler(stdoutHandler, victoriaLogsWriter)
+	loggerInstance = slog.New(multiHandler)
+
+	loggerInstance.Info("Text structured logger initialized")
+	if victoriaLogsWriter != nil {
+		loggerInstance.Info("VictoriaLogs enabled")
+	} else {
+		loggerInstance.Info("VictoriaLogs disabled")
+	}
+})
 
 // GetLogger returns a singleton slog.Logger that logs to the console
 func GetLogger() *slog.Logger {
-	once.Do(func() {
-		// Create stdout handler
-		stdoutHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-				if a.Key == slog.TimeKey {
-					a.Value = slog.StringValue(time.Now().Format("2006/01/02 15:04:05"))
-				}
-				if a.Key == slog.LevelKey {
-					return slog.Attr{}
-				}
-				return a
-			},
-		})
-
-		// Try to initialize VictoriaLogs writer if configured
-		// Note: This will be called before config is fully loaded in some cases,
-		// so we need to handle that gracefully
-		victoriaLogsWriter = tryInitVictoriaLogs()
-
-		// Create multi-handler
-		multiHandler := NewMultiHandler(stdoutHandler, victoriaLogsWriter)
-		loggerInstance = slog.New(multiHandler)
-
-		loggerInstance.Info("Text structured logger initialized")
-		if victoriaLogsWriter != nil {
-			loggerInstance.Info("VictoriaLogs enabled")
-		} else {
-			loggerInstance.Info("VictoriaLogs disabled")
-		}
-	})
-
+	initLogger()
 	return loggerInstance
 }
 
 // ShutdownVictoriaLogs gracefully shuts down the VictoriaLogs writer
-func ShutdownVictoriaLogs(timeout time.Duration) {
-	shutdownOnce.Do(func() {
-		if victoriaLogsWriter != nil {
-			victoriaLogsWriter.Shutdown(timeout)
-		}
-	})
-}
+var ShutdownVictoriaLogs = sync.OnceFunc(func() {
+	if victoriaLogsWriter != nil {
+		victoriaLogsWriter.Shutdown(5 * time.Second)
+	}
+})
 
 func tryInitVictoriaLogs() *VictoriaLogsWriter {
 	// Ensure .env is loaded before reading environment variables
@@ -82,46 +78,36 @@ func tryInitVictoriaLogs() *VictoriaLogsWriter {
 	return NewVictoriaLogsWriter(url, username, password)
 }
 
-func ensureEnvLoaded() {
-	envLoadOnce.Do(func() {
-		// Get current working directory
-		cwd, err := os.Getwd()
-		if err != nil {
-			fmt.Printf("Warning: could not get current working directory: %v\n", err)
-			cwd = "."
+var ensureEnvLoaded = sync.OnceFunc(func() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Printf("Warning: could not get current working directory: %v\n", err)
+		cwd = "."
+	}
+
+	backendRoot := cwd
+	for {
+		if _, err := os.Stat(filepath.Join(backendRoot, "go.mod")); err == nil {
+			break
 		}
 
-		// Find backend root by looking for go.mod
-		backendRoot := cwd
-		for {
-			if _, err := os.Stat(filepath.Join(backendRoot, "go.mod")); err == nil {
-				break
-			}
-
-			parent := filepath.Dir(backendRoot)
-			if parent == backendRoot {
-				break
-			}
-
-			backendRoot = parent
+		parent := filepath.Dir(backendRoot)
+		if parent == backendRoot {
+			break
 		}
 
-		// Try to load .env from various locations
-		envPaths := []string{
-			filepath.Join(cwd, ".env"),
-			filepath.Join(backendRoot, ".env"),
-		}
+		backendRoot = parent
+	}
 
-		for _, path := range envPaths {
-			if err := godotenv.Load(path); err == nil {
-				fmt.Printf("Logger: loaded .env from %s\n", path)
-				return
-			}
-		}
+	envPath := filepath.Join(filepath.Dir(backendRoot), ".env")
 
-		fmt.Println("Logger: .env file not found, using existing environment variables")
-	})
-}
+	if err := godotenv.Load(envPath); err == nil {
+		fmt.Printf("Logger: loaded .env from %s\n", envPath)
+		return
+	}
+
+	fmt.Println("Logger: .env file not found at repo root, using existing environment variables")
+})
 
 func getVictoriaLogsURL() string {
 	return os.Getenv("VICTORIA_LOGS_URL")

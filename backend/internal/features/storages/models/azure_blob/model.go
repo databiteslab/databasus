@@ -3,7 +3,6 @@ package azure_blob_storage
 import (
 	"bytes"
 	"context"
-	"databasus-backend/internal/util/encryption"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -19,6 +18,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/google/uuid"
+
+	"databasus-backend/internal/util/encryption"
 )
 
 const (
@@ -108,7 +109,7 @@ func (s *AzureBlobStorage) SaveFile(
 			return fmt.Errorf("read error: %w", readErr)
 		}
 
-		blockID := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%06d", blockNumber)))
+		blockID := base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "%06d", blockNumber))
 
 		_, err := blockBlobClient.StageBlock(
 			ctx,
@@ -293,14 +294,14 @@ func (s *AzureBlobStorage) EncryptSensitiveData(encryptor encryption.FieldEncryp
 	var err error
 
 	if s.ConnectionString != "" {
-		s.ConnectionString, err = encryptor.Encrypt(s.StorageID, s.ConnectionString)
+		s.ConnectionString, err = encryptor.Encrypt(s.ConnectionString)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt Azure connection string: %w", err)
 		}
 	}
 
 	if s.AccountKey != "" {
-		s.AccountKey, err = encryptor.Encrypt(s.StorageID, s.AccountKey)
+		s.AccountKey, err = encryptor.Encrypt(s.AccountKey)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt Azure account key: %w", err)
 		}
@@ -336,7 +337,7 @@ func (s *AzureBlobStorage) buildBlobName(fileName string) string {
 	prefix = strings.TrimPrefix(prefix, "/")
 
 	if !strings.HasSuffix(prefix, "/") {
-		prefix = prefix + "/"
+		prefix += "/"
 	}
 
 	return prefix + fileName
@@ -350,7 +351,7 @@ func (s *AzureBlobStorage) getClient(encryptor encryption.FieldEncryptor) (*azbl
 
 	switch s.AuthMethod {
 	case AuthMethodConnectionString:
-		connectionString, decryptErr := encryptor.Decrypt(s.StorageID, s.ConnectionString)
+		connectionString, decryptErr := encryptor.Decrypt(s.ConnectionString)
 		if decryptErr != nil {
 			return nil, fmt.Errorf("failed to decrypt Azure connection string: %w", decryptErr)
 		}
@@ -363,7 +364,7 @@ func (s *AzureBlobStorage) getClient(encryptor encryption.FieldEncryptor) (*azbl
 			)
 		}
 	case AuthMethodAccountKey:
-		accountKey, decryptErr := encryptor.Decrypt(s.StorageID, s.AccountKey)
+		accountKey, decryptErr := encryptor.Decrypt(s.AccountKey)
 		if decryptErr != nil {
 			return nil, fmt.Errorf("failed to decrypt Azure account key: %w", decryptErr)
 		}

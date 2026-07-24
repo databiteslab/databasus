@@ -1,11 +1,9 @@
 package mysql
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -14,204 +12,230 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 
-	"databasus-backend/internal/config"
+	"databasus-backend/internal/util/testing/containers"
 	"databasus-backend/internal/util/tools"
 )
 
-func Test_TestConnection_InsufficientPermissions_ReturnsError(t *testing.T) {
-	env := config.GetEnv()
-	cases := []struct {
-		name    string
-		version tools.MysqlVersion
-		port    string
-	}{
-		{"MySQL 5.7", tools.MysqlVersion57, env.TestMysql57Port},
-		{"MySQL 8.0", tools.MysqlVersion80, env.TestMysql80Port},
-		{"MySQL 8.4", tools.MysqlVersion84, env.TestMysql84Port},
-		{"MySQL 9", tools.MysqlVersion9, env.TestMysql90Port},
-	}
+type mysqlModelVersion struct {
+	name         string
+	version      tools.MysqlVersion
+	image        string
+	supportsZstd bool
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+var mysqlModelVersions = []mysqlModelVersion{
+	{"MySQL 5.7", tools.MysqlVersion57, "mysql:5.7", false},
+	{"MySQL 8.0", tools.MysqlVersion80, "mysql:8.0", true},
+	{"MySQL 8.4", tools.MysqlVersion84, "mysql:8.4", true},
+}
 
-			container := connectToMysqlContainer(t, tc.port, tc.version)
-			defer container.DB.Close()
+// Test_MysqlModel_AcrossSupportedVersions boots each MySQL version once and runs every matrix model
+// test against it as a subtest. Only one container is alive per package at a time. See ADR-0013.
+func Test_MysqlModel_AcrossSupportedVersions(t *testing.T) {
+	for _, dbVersion := range mysqlModelVersions {
+		t.Run(dbVersion.name, func(t *testing.T) {
+			endpoint := containers.StartMysql(t, dbVersion.image)
 
-			_, err := container.DB.Exec(`DROP TABLE IF EXISTS permission_test`)
-			assert.NoError(t, err)
+			t.Run("Test_TestConnection_InsufficientPermissions_ReturnsError", func(t *testing.T) {
+				testTestConnectionInsufficientPermissions(t, endpoint, dbVersion.version)
+			})
 
-			_, err = container.DB.Exec(`CREATE TABLE permission_test (
-				id INT AUTO_INCREMENT PRIMARY KEY,
-				data VARCHAR(255) NOT NULL
-			)`)
-			assert.NoError(t, err)
+			t.Run("Test_TestConnection_SufficientPermissions_Success", func(t *testing.T) {
+				testTestConnectionSufficientPermissions(t, endpoint, dbVersion.version)
+			})
 
-			_, err = container.DB.Exec(`INSERT INTO permission_test (data) VALUES ('test1')`)
-			assert.NoError(t, err)
+			t.Run("Test_TestConnection_DetectsZstdSupport", func(t *testing.T) {
+				testTestConnectionDetectsZstdSupport(t, endpoint, dbVersion.version, dbVersion.supportsZstd)
+			})
 
-			limitedUsername := fmt.Sprintf("limited_%s", uuid.New().String()[:8])
-			limitedPassword := "limitedpassword123"
+			t.Run("Test_IsUserReadOnly_AdminUser_ReturnsFalse", func(t *testing.T) {
+				testIsUserReadOnlyAdminUser(t, endpoint, dbVersion.version)
+			})
 
-			_, err = container.DB.Exec(fmt.Sprintf(
-				"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'",
-				limitedUsername,
-				limitedPassword,
-			))
-			assert.NoError(t, err)
+			t.Run("Test_CreateReadOnlyUser_UserCanReadButNotWrite", func(t *testing.T) {
+				testCreateReadOnlyUserCanReadButNotWrite(t, endpoint, dbVersion.version)
+			})
 
-			_, err = container.DB.Exec(fmt.Sprintf(
-				"GRANT SELECT ON `%s`.* TO '%s'@'%%'",
-				container.Database,
-				limitedUsername,
-			))
-			assert.NoError(t, err)
+			t.Run("Test_TestConnection_DatabaseSpecificPrivilegesWithGlobalProcess_Success", func(t *testing.T) {
+				testTestConnectionDatabaseSpecificPrivilegesWithGlobalProcess(t, endpoint, dbVersion.version)
+			})
 
-			_, err = container.DB.Exec("FLUSH PRIVILEGES")
-			assert.NoError(t, err)
-
-			defer func() {
-				_, _ = container.DB.Exec(
-					fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", limitedUsername),
-				)
-			}()
-
-			mysqlModel := &MysqlDatabase{
-				Version:  tc.version,
-				Host:     container.Host,
-				Port:     container.Port,
-				Username: limitedUsername,
-				Password: limitedPassword,
-				Database: &container.Database,
-				IsHttps:  false,
-			}
-
-			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-
-			err = mysqlModel.TestConnection(logger, nil, uuid.New())
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "insufficient permissions")
+			t.Run("Test_TestConnection_DatabaseWithUnderscoresAndAllPrivileges_Success", func(t *testing.T) {
+				testTestConnectionDatabaseWithUnderscoresAndAllPrivileges(t, endpoint, dbVersion.version)
+			})
 		})
 	}
 }
 
-func Test_TestConnection_SufficientPermissions_Success(t *testing.T) {
-	env := config.GetEnv()
-	cases := []struct {
-		name    string
-		version tools.MysqlVersion
-		port    string
-	}{
-		{"MySQL 5.7", tools.MysqlVersion57, env.TestMysql57Port},
-		{"MySQL 8.0", tools.MysqlVersion80, env.TestMysql80Port},
-		{"MySQL 8.4", tools.MysqlVersion84, env.TestMysql84Port},
-		{"MySQL 9", tools.MysqlVersion9, env.TestMysql90Port},
-	}
+func testTestConnectionInsufficientPermissions(
+	t *testing.T,
+	endpoint containers.Endpoint,
+	version tools.MysqlVersion,
+) {
+	container := connectToMysqlEndpoint(t, endpoint, version)
+	defer container.DB.Close()
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	_, err := container.DB.Exec(`DROP TABLE IF EXISTS permission_test`)
+	assert.NoError(t, err)
 
-			container := connectToMysqlContainer(t, tc.port, tc.version)
-			defer container.DB.Close()
-
-			_, err := container.DB.Exec(`DROP TABLE IF EXISTS backup_test`)
-			assert.NoError(t, err)
-
-			_, err = container.DB.Exec(`CREATE TABLE backup_test (
+	_, err = container.DB.Exec(`CREATE TABLE permission_test (
 				id INT AUTO_INCREMENT PRIMARY KEY,
 				data VARCHAR(255) NOT NULL
 			)`)
-			assert.NoError(t, err)
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec(`INSERT INTO backup_test (data) VALUES ('test1')`)
-			assert.NoError(t, err)
+	_, err = container.DB.Exec(`INSERT INTO permission_test (data) VALUES ('test1')`)
+	assert.NoError(t, err)
 
-			backupUsername := fmt.Sprintf("backup_%s", uuid.New().String()[:8])
-			backupPassword := "backuppassword123"
+	limitedUsername := fmt.Sprintf("limited_%s", uuid.New().String()[:8])
+	limitedPassword := "limitedpassword123"
 
-			_, err = container.DB.Exec(fmt.Sprintf(
-				"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'",
-				backupUsername,
-				backupPassword,
-			))
-			assert.NoError(t, err)
+	_, err = container.DB.Exec(fmt.Sprintf(
+		"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'",
+		limitedUsername,
+		limitedPassword,
+	))
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec(fmt.Sprintf(
-				"GRANT SELECT, SHOW VIEW, LOCK TABLES, TRIGGER, EVENT ON `%s`.* TO '%s'@'%%'",
-				container.Database,
-				backupUsername,
-			))
-			assert.NoError(t, err)
+	_, err = container.DB.Exec(fmt.Sprintf(
+		"GRANT SELECT ON `%s`.* TO '%s'@'%%'",
+		container.Database,
+		limitedUsername,
+	))
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec(fmt.Sprintf(
-				"GRANT PROCESS ON *.* TO '%s'@'%%'",
-				backupUsername,
-			))
-			assert.NoError(t, err)
+	_, err = container.DB.Exec("FLUSH PRIVILEGES")
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec("FLUSH PRIVILEGES")
-			assert.NoError(t, err)
+	defer func() {
+		_, _ = container.DB.Exec(
+			fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", limitedUsername),
+		)
+	}()
 
-			defer func() {
-				_, _ = container.DB.Exec(
-					fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", backupUsername),
-				)
-			}()
-
-			mysqlModel := &MysqlDatabase{
-				Version:  tc.version,
-				Host:     container.Host,
-				Port:     container.Port,
-				Username: backupUsername,
-				Password: backupPassword,
-				Database: &container.Database,
-				IsHttps:  false,
-			}
-
-			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-
-			err = mysqlModel.TestConnection(logger, nil, uuid.New())
-			assert.NoError(t, err)
-		})
+	mysqlModel := &MysqlDatabase{
+		Version:  version,
+		Host:     container.Host,
+		Port:     container.Port,
+		Username: limitedUsername,
+		Password: limitedPassword,
+		Database: &container.Database,
+		IsHttps:  false,
 	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	err = mysqlModel.TestConnection(logger, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "insufficient permissions")
 }
 
-func Test_IsUserReadOnly_AdminUser_ReturnsFalse(t *testing.T) {
-	env := config.GetEnv()
-	cases := []struct {
-		name    string
-		version tools.MysqlVersion
-		port    string
-	}{
-		{"MySQL 5.7", tools.MysqlVersion57, env.TestMysql57Port},
-		{"MySQL 8.0", tools.MysqlVersion80, env.TestMysql80Port},
-		{"MySQL 8.4", tools.MysqlVersion84, env.TestMysql84Port},
-		{"MySQL 9", tools.MysqlVersion9, env.TestMysql90Port},
+func testTestConnectionSufficientPermissions(
+	t *testing.T,
+	endpoint containers.Endpoint,
+	version tools.MysqlVersion,
+) {
+	container := connectToMysqlEndpoint(t, endpoint, version)
+	defer container.DB.Close()
+
+	_, err := container.DB.Exec(`DROP TABLE IF EXISTS backup_test`)
+	assert.NoError(t, err)
+
+	_, err = container.DB.Exec(`CREATE TABLE backup_test (
+				id INT AUTO_INCREMENT PRIMARY KEY,
+				data VARCHAR(255) NOT NULL
+			)`)
+	assert.NoError(t, err)
+
+	_, err = container.DB.Exec(`INSERT INTO backup_test (data) VALUES ('test1')`)
+	assert.NoError(t, err)
+
+	backupUsername := fmt.Sprintf("backup_%s", uuid.New().String()[:8])
+	backupPassword := "backuppassword123"
+
+	_, err = container.DB.Exec(fmt.Sprintf(
+		"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'",
+		backupUsername,
+		backupPassword,
+	))
+	assert.NoError(t, err)
+
+	_, err = container.DB.Exec(fmt.Sprintf(
+		"GRANT SELECT, SHOW VIEW, LOCK TABLES, TRIGGER, EVENT ON `%s`.* TO '%s'@'%%'",
+		container.Database,
+		backupUsername,
+	))
+	assert.NoError(t, err)
+
+	_, err = container.DB.Exec(fmt.Sprintf(
+		"GRANT PROCESS ON *.* TO '%s'@'%%'",
+		backupUsername,
+	))
+	assert.NoError(t, err)
+
+	_, err = container.DB.Exec("FLUSH PRIVILEGES")
+	assert.NoError(t, err)
+
+	defer func() {
+		_, _ = container.DB.Exec(
+			fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", backupUsername),
+		)
+	}()
+
+	mysqlModel := &MysqlDatabase{
+		Version:  version,
+		Host:     container.Host,
+		Port:     container.Port,
+		Username: backupUsername,
+		Password: backupPassword,
+		Database: &container.Database,
+		IsHttps:  false,
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-			container := connectToMysqlContainer(t, tc.port, tc.version)
-			defer container.DB.Close()
+	err = mysqlModel.TestConnection(logger, nil)
+	assert.NoError(t, err)
+}
 
-			mysqlModel := createMysqlModel(container)
-			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-			ctx := context.Background()
+func testTestConnectionDetectsZstdSupport(
+	t *testing.T,
+	endpoint containers.Endpoint,
+	version tools.MysqlVersion,
+	expectedZstd bool,
+) {
+	container := connectToMysqlEndpoint(t, endpoint, version)
+	defer container.DB.Close()
 
-			isReadOnly, privileges, err := mysqlModel.IsUserReadOnly(ctx, logger, nil, uuid.New())
-			assert.NoError(t, err)
-			assert.False(t, isReadOnly, "Root user should not be read-only")
-			assert.NotEmpty(t, privileges, "Root user should have privileges")
-		})
-	}
+	mysqlModel := createMysqlModel(container)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	err := mysqlModel.TestConnection(logger, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, expectedZstd, mysqlModel.IsZstdSupported,
+		"IsZstdSupported mismatch")
+}
+
+func testIsUserReadOnlyAdminUser(
+	t *testing.T,
+	endpoint containers.Endpoint,
+	version tools.MysqlVersion,
+) {
+	container := connectToMysqlEndpoint(t, endpoint, version)
+	defer container.DB.Close()
+
+	mysqlModel := createMysqlModel(container)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	ctx := t.Context()
+
+	isReadOnly, privileges, err := mysqlModel.IsUserReadOnly(ctx, logger, nil)
+	assert.NoError(t, err)
+	assert.False(t, isReadOnly, "Root user should not be read-only")
+	assert.NotEmpty(t, privileges, "Root user should have privileges")
 }
 
 func Test_IsUserReadOnly_ReadOnlyUser_ReturnsTrue(t *testing.T) {
-	env := config.GetEnv()
-	container := connectToMysqlContainer(t, env.TestMysql80Port, tools.MysqlVersion80)
+	container := connectToMysqlContainer(t, "mysql:8.0", tools.MysqlVersion80)
 	defer container.DB.Close()
 
 	_, err := container.DB.Exec(`DROP TABLE IF EXISTS readonly_check_test`)
@@ -228,9 +252,9 @@ func Test_IsUserReadOnly_ReadOnlyUser_ReturnsTrue(t *testing.T) {
 
 	mysqlModel := createMysqlModel(container)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	ctx := context.Background()
+	ctx := t.Context()
 
-	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil, uuid.New())
+	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil)
 	assert.NoError(t, err)
 
 	readOnlyModel := &MysqlDatabase{
@@ -243,7 +267,7 @@ func Test_IsUserReadOnly_ReadOnlyUser_ReturnsTrue(t *testing.T) {
 		IsHttps:  false,
 	}
 
-	isReadOnly, privileges, err := readOnlyModel.IsUserReadOnly(ctx, logger, nil, uuid.New())
+	isReadOnly, privileges, err := readOnlyModel.IsUserReadOnly(ctx, logger, nil)
 	assert.NoError(t, err)
 	assert.True(t, isReadOnly, "Read-only user should be read-only")
 	assert.Empty(t, privileges, "Read-only user should have no write privileges")
@@ -252,125 +276,109 @@ func Test_IsUserReadOnly_ReadOnlyUser_ReturnsTrue(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func Test_CreateReadOnlyUser_UserCanReadButNotWrite(t *testing.T) {
-	env := config.GetEnv()
-	cases := []struct {
-		name    string
-		version tools.MysqlVersion
-		port    string
-	}{
-		{"MySQL 5.7", tools.MysqlVersion57, env.TestMysql57Port},
-		{"MySQL 8.0", tools.MysqlVersion80, env.TestMysql80Port},
-		{"MySQL 8.4", tools.MysqlVersion84, env.TestMysql84Port},
-		{"MySQL 9", tools.MysqlVersion9, env.TestMysql90Port},
-	}
+func testCreateReadOnlyUserCanReadButNotWrite(
+	t *testing.T,
+	endpoint containers.Endpoint,
+	version tools.MysqlVersion,
+) {
+	container := connectToMysqlEndpoint(t, endpoint, version)
+	defer container.DB.Close()
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	_, err := container.DB.Exec(`DROP TABLE IF EXISTS readonly_test`)
+	assert.NoError(t, err)
+	_, err = container.DB.Exec(`DROP TABLE IF EXISTS hack_table`)
+	assert.NoError(t, err)
+	_, err = container.DB.Exec(`DROP TABLE IF EXISTS future_table`)
+	assert.NoError(t, err)
 
-			container := connectToMysqlContainer(t, tc.port, tc.version)
-			defer container.DB.Close()
-
-			_, err := container.DB.Exec(`DROP TABLE IF EXISTS readonly_test`)
-			assert.NoError(t, err)
-			_, err = container.DB.Exec(`DROP TABLE IF EXISTS hack_table`)
-			assert.NoError(t, err)
-			_, err = container.DB.Exec(`DROP TABLE IF EXISTS future_table`)
-			assert.NoError(t, err)
-
-			_, err = container.DB.Exec(`
+	_, err = container.DB.Exec(`
 				CREATE TABLE readonly_test (
 					id INT AUTO_INCREMENT PRIMARY KEY,
 					data VARCHAR(255) NOT NULL
 				)
 			`)
-			assert.NoError(t, err)
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec(
-				`INSERT INTO readonly_test (data) VALUES ('test1'), ('test2')`,
-			)
-			assert.NoError(t, err)
+	_, err = container.DB.Exec(
+		`INSERT INTO readonly_test (data) VALUES ('test1'), ('test2')`,
+	)
+	assert.NoError(t, err)
 
-			mysqlModel := createMysqlModel(container)
-			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-			ctx := context.Background()
+	mysqlModel := createMysqlModel(container)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	ctx := t.Context()
 
-			username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil, uuid.New())
-			assert.NoError(t, err)
-			assert.NotEmpty(t, username)
-			assert.NotEmpty(t, password)
-			assert.True(t, strings.HasPrefix(username, "databasus-"))
+	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, username)
+	assert.NotEmpty(t, password)
+	assert.True(t, strings.HasPrefix(username, "databasus-"))
 
-			readOnlyModel := &MysqlDatabase{
-				Version:  mysqlModel.Version,
-				Host:     mysqlModel.Host,
-				Port:     mysqlModel.Port,
-				Username: username,
-				Password: password,
-				Database: mysqlModel.Database,
-				IsHttps:  false,
-			}
-
-			isReadOnly, privileges, err := readOnlyModel.IsUserReadOnly(
-				ctx,
-				logger,
-				nil,
-				uuid.New(),
-			)
-			assert.NoError(t, err)
-			assert.True(t, isReadOnly, "Created user should be read-only")
-			assert.Empty(t, privileges, "Read-only user should have no write privileges")
-
-			readOnlyDSN := fmt.Sprintf(
-				"%s:%s@tcp(%s:%d)/%s?parseTime=true",
-				username,
-				password,
-				container.Host,
-				container.Port,
-				container.Database,
-			)
-			readOnlyConn, err := sqlx.Connect("mysql", readOnlyDSN)
-			assert.NoError(t, err)
-			defer readOnlyConn.Close()
-
-			var count int
-			err = readOnlyConn.Get(&count, "SELECT COUNT(*) FROM readonly_test")
-			assert.NoError(t, err)
-			assert.Equal(t, 2, count)
-
-			_, err = readOnlyConn.Exec("INSERT INTO readonly_test (data) VALUES ('should-fail')")
-			assert.Error(t, err)
-			assert.Contains(t, strings.ToLower(err.Error()), "denied")
-
-			_, err = readOnlyConn.Exec("UPDATE readonly_test SET data = 'hacked' WHERE id = 1")
-			assert.Error(t, err)
-			assert.Contains(t, strings.ToLower(err.Error()), "denied")
-
-			_, err = readOnlyConn.Exec("DELETE FROM readonly_test WHERE id = 1")
-			assert.Error(t, err)
-			assert.Contains(t, strings.ToLower(err.Error()), "denied")
-
-			_, err = readOnlyConn.Exec("CREATE TABLE hack_table (id INT)")
-			assert.Error(t, err)
-			assert.Contains(t, strings.ToLower(err.Error()), "denied")
-
-			_, err = container.DB.Exec(fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", username))
-			assert.NoError(t, err)
-		})
+	readOnlyModel := &MysqlDatabase{
+		Version:  mysqlModel.Version,
+		Host:     mysqlModel.Host,
+		Port:     mysqlModel.Port,
+		Username: username,
+		Password: password,
+		Database: mysqlModel.Database,
+		IsHttps:  false,
 	}
+
+	isReadOnly, privileges, err := readOnlyModel.IsUserReadOnly(
+		ctx,
+		logger,
+		nil,
+	)
+	assert.NoError(t, err)
+	assert.True(t, isReadOnly, "Created user should be read-only")
+	assert.Empty(t, privileges, "Read-only user should have no write privileges")
+
+	readOnlyDSN := fmt.Sprintf(
+		"%s:%s@tcp(%s:%d)/%s?parseTime=true",
+		username,
+		password,
+		container.Host,
+		container.Port,
+		container.Database,
+	)
+	readOnlyConn, err := sqlx.Connect("mysql", readOnlyDSN)
+	assert.NoError(t, err)
+	defer readOnlyConn.Close()
+
+	var count int
+	err = readOnlyConn.Get(&count, "SELECT COUNT(*) FROM readonly_test")
+	assert.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	_, err = readOnlyConn.Exec("INSERT INTO readonly_test (data) VALUES ('should-fail')")
+	assert.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "denied")
+
+	_, err = readOnlyConn.Exec("UPDATE readonly_test SET data = 'hacked' WHERE id = 1")
+	assert.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "denied")
+
+	_, err = readOnlyConn.Exec("DELETE FROM readonly_test WHERE id = 1")
+	assert.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "denied")
+
+	_, err = readOnlyConn.Exec("CREATE TABLE hack_table (id INT)")
+	assert.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "denied")
+
+	_, err = container.DB.Exec(fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", username))
+	assert.NoError(t, err)
 }
 
 func Test_ReadOnlyUser_FutureTables_NoSelectPermission(t *testing.T) {
-	env := config.GetEnv()
-	container := connectToMysqlContainer(t, env.TestMysql80Port, tools.MysqlVersion80)
+	container := connectToMysqlContainer(t, "mysql:8.0", tools.MysqlVersion80)
 	defer container.DB.Close()
 
 	mysqlModel := createMysqlModel(container)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	ctx := context.Background()
+	ctx := t.Context()
 
-	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil, uuid.New())
+	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil)
 	assert.NoError(t, err)
 
 	_, err = container.DB.Exec(`DROP TABLE IF EXISTS future_table`)
@@ -401,8 +409,7 @@ func Test_ReadOnlyUser_FutureTables_NoSelectPermission(t *testing.T) {
 }
 
 func Test_CreateReadOnlyUser_DatabaseNameWithDash_Success(t *testing.T) {
-	env := config.GetEnv()
-	container := connectToMysqlContainer(t, env.TestMysql80Port, tools.MysqlVersion80)
+	container := connectToMysqlContainer(t, "mysql:8.0", tools.MysqlVersion80)
 	defer container.DB.Close()
 
 	dashDbName := "test-db-with-dash"
@@ -445,9 +452,9 @@ func Test_CreateReadOnlyUser_DatabaseNameWithDash_Success(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	ctx := context.Background()
+	ctx := t.Context()
 
-	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil, uuid.New())
+	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, username)
 	assert.NotEmpty(t, password)
@@ -473,8 +480,7 @@ func Test_CreateReadOnlyUser_DatabaseNameWithDash_Success(t *testing.T) {
 }
 
 func Test_ReadOnlyUser_CannotDropOrAlterTables(t *testing.T) {
-	env := config.GetEnv()
-	container := connectToMysqlContainer(t, env.TestMysql80Port, tools.MysqlVersion80)
+	container := connectToMysqlContainer(t, "mysql:8.0", tools.MysqlVersion80)
 	defer container.DB.Close()
 
 	_, err := container.DB.Exec(`DROP TABLE IF EXISTS drop_test`)
@@ -491,9 +497,9 @@ func Test_ReadOnlyUser_CannotDropOrAlterTables(t *testing.T) {
 
 	mysqlModel := createMysqlModel(container)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	ctx := context.Background()
+	ctx := t.Context()
 
-	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil, uuid.New())
+	username, password, err := mysqlModel.CreateReadOnlyUser(ctx, logger, nil)
 	assert.NoError(t, err)
 
 	readOnlyDSN := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true",
@@ -518,91 +524,76 @@ func Test_ReadOnlyUser_CannotDropOrAlterTables(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func Test_TestConnection_DatabaseSpecificPrivilegesWithGlobalProcess_Success(t *testing.T) {
-	env := config.GetEnv()
-	cases := []struct {
-		name    string
-		version tools.MysqlVersion
-		port    string
-	}{
-		{"MySQL 5.7", tools.MysqlVersion57, env.TestMysql57Port},
-		{"MySQL 8.0", tools.MysqlVersion80, env.TestMysql80Port},
-		{"MySQL 8.4", tools.MysqlVersion84, env.TestMysql84Port},
-		{"MySQL 9", tools.MysqlVersion9, env.TestMysql90Port},
-	}
+func testTestConnectionDatabaseSpecificPrivilegesWithGlobalProcess(
+	t *testing.T,
+	endpoint containers.Endpoint,
+	version tools.MysqlVersion,
+) {
+	container := connectToMysqlEndpoint(t, endpoint, version)
+	defer container.DB.Close()
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	_, err := container.DB.Exec(`DROP TABLE IF EXISTS privilege_test`)
+	assert.NoError(t, err)
 
-			container := connectToMysqlContainer(t, tc.port, tc.version)
-			defer container.DB.Close()
-
-			_, err := container.DB.Exec(`DROP TABLE IF EXISTS privilege_test`)
-			assert.NoError(t, err)
-
-			_, err = container.DB.Exec(`CREATE TABLE privilege_test (
+	_, err = container.DB.Exec(`CREATE TABLE privilege_test (
 				id INT AUTO_INCREMENT PRIMARY KEY,
 				data VARCHAR(255) NOT NULL
 			)`)
-			assert.NoError(t, err)
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec(`INSERT INTO privilege_test (data) VALUES ('test1')`)
-			assert.NoError(t, err)
+	_, err = container.DB.Exec(`INSERT INTO privilege_test (data) VALUES ('test1')`)
+	assert.NoError(t, err)
 
-			specificUsername := fmt.Sprintf("specific_%s", uuid.New().String()[:8])
-			specificPassword := "specificpass123"
+	specificUsername := fmt.Sprintf("specific_%s", uuid.New().String()[:8])
+	specificPassword := "specificpass123"
 
-			_, err = container.DB.Exec(fmt.Sprintf(
-				"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'",
-				specificUsername,
-				specificPassword,
-			))
-			assert.NoError(t, err)
+	_, err = container.DB.Exec(fmt.Sprintf(
+		"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'",
+		specificUsername,
+		specificPassword,
+	))
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec(fmt.Sprintf(
-				"GRANT SELECT, SHOW VIEW ON %s.* TO '%s'@'%%'",
-				container.Database,
-				specificUsername,
-			))
-			assert.NoError(t, err)
+	_, err = container.DB.Exec(fmt.Sprintf(
+		"GRANT SELECT, SHOW VIEW ON %s.* TO '%s'@'%%'",
+		container.Database,
+		specificUsername,
+	))
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec(fmt.Sprintf(
-				"GRANT PROCESS ON *.* TO '%s'@'%%'",
-				specificUsername,
-			))
-			assert.NoError(t, err)
+	_, err = container.DB.Exec(fmt.Sprintf(
+		"GRANT PROCESS ON *.* TO '%s'@'%%'",
+		specificUsername,
+	))
+	assert.NoError(t, err)
 
-			_, err = container.DB.Exec("FLUSH PRIVILEGES")
-			assert.NoError(t, err)
+	_, err = container.DB.Exec("FLUSH PRIVILEGES")
+	assert.NoError(t, err)
 
-			defer func() {
-				_, _ = container.DB.Exec(
-					fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", specificUsername),
-				)
-			}()
+	defer func() {
+		_, _ = container.DB.Exec(
+			fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", specificUsername),
+		)
+	}()
 
-			mysqlModel := &MysqlDatabase{
-				Version:  tc.version,
-				Host:     container.Host,
-				Port:     container.Port,
-				Username: specificUsername,
-				Password: specificPassword,
-				Database: &container.Database,
-				IsHttps:  false,
-			}
-
-			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-
-			err = mysqlModel.TestConnection(logger, nil, uuid.New())
-			assert.NoError(t, err)
-		})
+	mysqlModel := &MysqlDatabase{
+		Version:  version,
+		Host:     container.Host,
+		Port:     container.Port,
+		Username: specificUsername,
+		Password: specificPassword,
+		Database: &container.Database,
+		IsHttps:  false,
 	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	err = mysqlModel.TestConnection(logger, nil)
+	assert.NoError(t, err)
 }
 
 func Test_TestConnection_DatabaseWithUnderscores_Success(t *testing.T) {
-	env := config.GetEnv()
-	container := connectToMysqlContainer(t, env.TestMysql80Port, tools.MysqlVersion80)
+	container := connectToMysqlContainer(t, "mysql:8.0", tools.MysqlVersion80)
 	defer container.DB.Close()
 
 	underscoreDbName := "test_db_name"
@@ -670,114 +661,100 @@ func Test_TestConnection_DatabaseWithUnderscores_Success(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	err = mysqlModel.TestConnection(logger, nil, uuid.New())
+	err = mysqlModel.TestConnection(logger, nil)
 	assert.NoError(t, err)
 }
 
-func Test_TestConnection_DatabaseWithUnderscoresAndAllPrivileges_Success(t *testing.T) {
-	env := config.GetEnv()
-	cases := []struct {
-		name    string
-		version tools.MysqlVersion
-		port    string
-	}{
-		{"MySQL 5.7", tools.MysqlVersion57, env.TestMysql57Port},
-		{"MySQL 8.0", tools.MysqlVersion80, env.TestMysql80Port},
-		{"MySQL 8.4", tools.MysqlVersion84, env.TestMysql84Port},
-		{"MySQL 9", tools.MysqlVersion9, env.TestMysql90Port},
-	}
+func testTestConnectionDatabaseWithUnderscoresAndAllPrivileges(
+	t *testing.T,
+	endpoint containers.Endpoint,
+	version tools.MysqlVersion,
+) {
+	container := connectToMysqlEndpoint(t, endpoint, version)
+	defer container.DB.Close()
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	underscoreDbName := "test_all_db"
 
-			container := connectToMysqlContainer(t, tc.port, tc.version)
-			defer container.DB.Close()
+	_, err := container.DB.Exec(
+		fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", underscoreDbName),
+	)
+	assert.NoError(t, err)
 
-			underscoreDbName := "test_all_db"
+	_, err = container.DB.Exec(fmt.Sprintf("CREATE DATABASE `%s`", underscoreDbName))
+	assert.NoError(t, err)
 
-			_, err := container.DB.Exec(
-				fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", underscoreDbName),
-			)
-			assert.NoError(t, err)
+	defer func() {
+		_, _ = container.DB.Exec(
+			fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", underscoreDbName),
+		)
+	}()
 
-			_, err = container.DB.Exec(fmt.Sprintf("CREATE DATABASE `%s`", underscoreDbName))
-			assert.NoError(t, err)
+	underscoreDSN := fmt.Sprintf(
+		"%s:%s@tcp(%s:%d)/%s?parseTime=true",
+		container.Username,
+		container.Password,
+		container.Host,
+		container.Port,
+		underscoreDbName,
+	)
+	underscoreDB, err := sqlx.Connect("mysql", underscoreDSN)
+	assert.NoError(t, err)
+	defer underscoreDB.Close()
 
-			defer func() {
-				_, _ = container.DB.Exec(
-					fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", underscoreDbName),
-				)
-			}()
-
-			underscoreDSN := fmt.Sprintf(
-				"%s:%s@tcp(%s:%d)/%s?parseTime=true",
-				container.Username,
-				container.Password,
-				container.Host,
-				container.Port,
-				underscoreDbName,
-			)
-			underscoreDB, err := sqlx.Connect("mysql", underscoreDSN)
-			assert.NoError(t, err)
-			defer underscoreDB.Close()
-
-			_, err = underscoreDB.Exec(`
+	_, err = underscoreDB.Exec(`
 				CREATE TABLE all_priv_test (
 					id INT AUTO_INCREMENT PRIMARY KEY,
 					data VARCHAR(255) NOT NULL
 				)
 			`)
-			assert.NoError(t, err)
+	assert.NoError(t, err)
 
-			_, err = underscoreDB.Exec(`INSERT INTO all_priv_test (data) VALUES ('test1')`)
-			assert.NoError(t, err)
+	_, err = underscoreDB.Exec(`INSERT INTO all_priv_test (data) VALUES ('test1')`)
+	assert.NoError(t, err)
 
-			allPrivUsername := fmt.Sprintf("allpriv_%s", uuid.New().String()[:8])
-			allPrivPassword := "allprivpass123"
+	allPrivUsername := fmt.Sprintf("allpriv_%s", uuid.New().String()[:8])
+	allPrivPassword := "allprivpass123"
 
-			_, err = underscoreDB.Exec(fmt.Sprintf(
-				"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'",
-				allPrivUsername,
-				allPrivPassword,
-			))
-			assert.NoError(t, err)
+	_, err = underscoreDB.Exec(fmt.Sprintf(
+		"CREATE USER '%s'@'%%' IDENTIFIED BY '%s'",
+		allPrivUsername,
+		allPrivPassword,
+	))
+	assert.NoError(t, err)
 
-			_, err = underscoreDB.Exec(fmt.Sprintf(
-				"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%%'",
-				underscoreDbName,
-				allPrivUsername,
-			))
-			assert.NoError(t, err)
+	_, err = underscoreDB.Exec(fmt.Sprintf(
+		"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%%'",
+		underscoreDbName,
+		allPrivUsername,
+	))
+	assert.NoError(t, err)
 
-			_, err = underscoreDB.Exec("FLUSH PRIVILEGES")
-			assert.NoError(t, err)
+	_, err = underscoreDB.Exec("FLUSH PRIVILEGES")
+	assert.NoError(t, err)
 
-			defer func() {
-				_, _ = container.DB.Exec(
-					fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", allPrivUsername),
-				)
-			}()
+	defer func() {
+		_, _ = container.DB.Exec(
+			fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", allPrivUsername),
+		)
+	}()
 
-			mysqlModel := &MysqlDatabase{
-				Version:  tc.version,
-				Host:     container.Host,
-				Port:     container.Port,
-				Username: allPrivUsername,
-				Password: allPrivPassword,
-				Database: &underscoreDbName,
-				IsHttps:  false,
-			}
-
-			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-
-			err = mysqlModel.TestConnection(logger, nil, uuid.New())
-			assert.NoError(t, err)
-			assert.NotEmpty(t, mysqlModel.Privileges)
-			assert.Contains(t, mysqlModel.Privileges, "SELECT")
-			assert.Contains(t, mysqlModel.Privileges, "SHOW VIEW")
-		})
+	mysqlModel := &MysqlDatabase{
+		Version:  version,
+		Host:     container.Host,
+		Port:     container.Port,
+		Username: allPrivUsername,
+		Password: allPrivPassword,
+		Database: &underscoreDbName,
+		IsHttps:  false,
 	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	err = mysqlModel.TestConnection(logger, nil)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, mysqlModel.Privileges)
+	assert.Contains(t, mysqlModel.Privileges, "SELECT")
+	assert.Contains(t, mysqlModel.Privileges, "SHOW VIEW")
 }
 
 type MysqlContainer struct {
@@ -790,34 +767,172 @@ type MysqlContainer struct {
 	DB       *sqlx.DB
 }
 
-func connectToMysqlContainer(
-	t *testing.T,
-	port string,
-	version tools.MysqlVersion,
-) *MysqlContainer {
-	if port == "" {
-		t.Skipf("MySQL port not configured for version %s", version)
+func Test_GetRawDbSizeMb_Mysql_ReturnsPositiveSize(t *testing.T) {
+	container := connectToMysqlContainer(t, "mysql:8.0", tools.MysqlVersion80)
+	defer container.DB.Close()
+
+	tableName := fmt.Sprintf("size_test_%s", uuid.New().String()[:8])
+	_, err := container.DB.Exec(fmt.Sprintf(
+		`CREATE TABLE %s (id INT AUTO_INCREMENT PRIMARY KEY, payload TEXT NOT NULL)`,
+		tableName,
+	))
+	assert.NoError(t, err)
+	defer func() {
+		_, _ = container.DB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	}()
+
+	for i := 0; i < 1000; i++ {
+		_, err = container.DB.Exec(
+			fmt.Sprintf("INSERT INTO %s (payload) VALUES (?)", tableName),
+			strings.Repeat("x", 1024),
+		)
+		assert.NoError(t, err)
 	}
 
-	dbName := "testdb"
-	host := config.GetEnv().TestLocalhost
-	username := "root"
-	password := "rootpassword"
-
-	portInt, err := strconv.Atoi(port)
+	_, err = container.DB.Exec("ANALYZE TABLE " + tableName)
 	assert.NoError(t, err)
 
+	mysqlModel := createMysqlModel(container)
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	sizeMB, err := mysqlModel.GetRawDbSizeMb(t.Context(), logger, nil)
+	assert.NoError(t, err)
+	assert.Greater(t, sizeMB, 0.0, "raw db size should be > 0 after inserting data")
+}
+
+func Test_ParseGrantPrivileges_ReturnsExpectedTokens(t *testing.T) {
+	cases := []struct {
+		name  string
+		grant string
+		want  []string
+	}{
+		{
+			"issue-568 SHOW CREATE ROUTINE not split into CREATE",
+			"GRANT SELECT, SHOW VIEW, SHOW CREATE ROUTINE ON *.* TO 'backup'@'%'",
+			[]string{"SELECT", "SHOW VIEW", "SHOW CREATE ROUTINE"},
+		},
+		{
+			"standard write privs",
+			"GRANT SELECT, INSERT, UPDATE ON *.* TO 'x'@'%'",
+			[]string{"SELECT", "INSERT", "UPDATE"},
+		},
+		{
+			"ALL PRIVILEGES",
+			"GRANT ALL PRIVILEGES ON db.* TO 'x'@'%'",
+			[]string{"ALL PRIVILEGES"},
+		},
+		{
+			"USAGE-only line",
+			"GRANT USAGE ON *.* TO 'x'@'%'",
+			[]string{"USAGE"},
+		},
+		{
+			"column-level qualifiers stripped",
+			"GRANT SELECT (col1, col2), UPDATE (col3) ON db.t TO 'x'@'%'",
+			[]string{"SELECT", "UPDATE"},
+		},
+		{
+			"role grant (no ON clause) returns nil",
+			"GRANT my_role TO 'u'@'%'",
+			nil,
+		},
+		{
+			"PROXY grant",
+			"GRANT PROXY ON 'other'@'%' TO 'u'@'%'",
+			[]string{"PROXY"},
+		},
+		{
+			"WITH GRANT OPTION trailer ignored",
+			"GRANT SELECT, INSERT ON *.* TO 'x'@'%' WITH GRANT OPTION",
+			[]string{"SELECT", "INSERT"},
+		},
+		{
+			"mixed case GRANT/ON",
+			"grant Select, Update on *.* to 'x'@'%'",
+			[]string{"SELECT", "UPDATE"},
+		},
+		{
+			"column literally named ON inside parens",
+			"GRANT SELECT (on) ON db.t TO 'x'@'%'",
+			[]string{"SELECT"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseGrantPrivileges(tc.grant)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func Test_HideSensitiveData_WhenCalled_ClearsPasswordAndPreservesOtherFields(t *testing.T) {
+	databaseName := "appdb"
+	mysqlModel := &MysqlDatabase{
+		Version:         tools.MysqlVersion80,
+		Host:            "db.example.com",
+		Port:            3306,
+		Username:        "appuser",
+		Password:        "supersecret",
+		Database:        &databaseName,
+		IsHttps:         true,
+		ExcludeTables:   []string{"audit_logs"},
+		Privileges:      "SELECT, INSERT",
+		IsZstdSupported: true,
+	}
+
+	mysqlModel.HideSensitiveData()
+
+	assert.Empty(t, mysqlModel.Password)
+	assert.Equal(t, "db.example.com", mysqlModel.Host)
+	assert.Equal(t, 3306, mysqlModel.Port)
+	assert.Equal(t, "appuser", mysqlModel.Username)
+	assert.Equal(t, &databaseName, mysqlModel.Database)
+	assert.True(t, mysqlModel.IsHttps)
+	assert.Equal(t, []string{"audit_logs"}, mysqlModel.ExcludeTables)
+	assert.Equal(t, "SELECT, INSERT", mysqlModel.Privileges)
+	assert.True(t, mysqlModel.IsZstdSupported)
+}
+
+func Test_HideSensitiveData_WhenReceiverIsNil_DoesNotPanic(t *testing.T) {
+	var mysqlModel *MysqlDatabase
+
+	assert.NotPanics(t, func() {
+		mysqlModel.HideSensitiveData()
+	})
+}
+
+func connectToMysqlContainer(
+	t *testing.T,
+	image string,
+	version tools.MysqlVersion,
+) *MysqlContainer {
+	endpoint := containers.StartMysql(t, image)
+
+	return connectToMysqlEndpoint(t, endpoint, version)
+}
+
+func connectToMysqlEndpoint(
+	t *testing.T,
+	endpoint containers.Endpoint,
+	version tools.MysqlVersion,
+) *MysqlContainer {
+	dbName := containers.MysqlDatabase
+	username := "root"
+	password := containers.MysqlRootPassword
+
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true",
-		username, password, host, portInt, dbName)
+		username, password, endpoint.Host, endpoint.Port, dbName)
 
 	db, err := sqlx.Connect("mysql", dsn)
 	if err != nil {
-		t.Skipf("Failed to connect to MySQL %s: %v", version, err)
+		t.Fatalf("Failed to connect to MySQL %s: %v", version, err)
 	}
 
 	return &MysqlContainer{
-		Host:     host,
-		Port:     portInt,
+		Host:     endpoint.Host,
+		Port:     endpoint.Port,
 		Username: username,
 		Password: password,
 		Database: dbName,

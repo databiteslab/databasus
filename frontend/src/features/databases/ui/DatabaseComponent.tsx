@@ -1,17 +1,16 @@
 import { Spin } from 'antd';
-import { useRef, useState } from 'react';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { type Database, databaseApi } from '../../../entity/databases';
-import type { UserProfile } from '../../../entity/users';
-import { BackupsComponent } from '../../backups';
+import { type Database, DatabaseType, databaseApi } from '../../../entity/databases';
+import { LogicalBackupsComponent } from '../../backups/logical';
+import { PhysicalBackupsComponent } from '../../backups/physical';
 import { HealthckeckAttemptsComponent } from '../../healthcheck';
+import { VerificationsComponent } from '../../verification/runs';
 import { DatabaseConfigComponent } from './DatabaseConfigComponent';
 
 interface Props {
   contentHeight: number;
   databaseId: string;
-  user: UserProfile;
   onDatabaseChanged: (database: Database) => void;
   onDatabaseDeleted: () => void;
   isCanManageDBs: boolean;
@@ -20,17 +19,25 @@ interface Props {
 export const DatabaseComponent = ({
   contentHeight,
   databaseId,
-  user,
   onDatabaseChanged,
   onDatabaseDeleted,
   isCanManageDBs,
 }: Props) => {
-  const [currentTab, setCurrentTab] = useState<'config' | 'backups' | 'metrics'>('backups');
+  const [currentTab, setCurrentTab] = useState<'config' | 'backups' | 'verifications'>('backups');
 
   const [database, setDatabase] = useState<Database | undefined>();
   const [editDatabase, setEditDatabase] = useState<Database | undefined>();
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const [isHealthcheckVisible, setIsHealthcheckVisible] = useState(false);
+
+  const handleHealthcheckVisibilityChange = (isVisible: boolean) => {
+    setIsHealthcheckVisible(isVisible);
+  };
+
+  const isPostgresDatabase = database?.type === DatabaseType.POSTGRES_LOGICAL;
+  const isPhysicalDatabase = database?.type === DatabaseType.POSTGRES_PHYSICAL;
 
   const loadSettings = () => {
     setDatabase(undefined);
@@ -66,12 +73,20 @@ export const DatabaseComponent = ({
         >
           Backups
         </div>
+
+        {isPostgresDatabase && (
+          <div
+            className={`mr-2 cursor-pointer rounded-tl-md rounded-tr-md px-6 py-2 ${currentTab === 'verifications' ? 'bg-white dark:bg-gray-800' : 'bg-gray-200 dark:bg-gray-700'}`}
+            onClick={() => setCurrentTab('verifications')}
+          >
+            Verifications
+          </div>
+        )}
       </div>
 
       {currentTab === 'config' && (
         <DatabaseConfigComponent
           database={database}
-          user={user}
           setDatabase={setDatabase}
           onDatabaseChanged={onDatabaseChanged}
           onDatabaseDeleted={onDatabaseDeleted}
@@ -83,13 +98,37 @@ export const DatabaseComponent = ({
 
       {currentTab === 'backups' && (
         <>
-          <HealthckeckAttemptsComponent database={database} />
-          <BackupsComponent
+          <HealthckeckAttemptsComponent
             database={database}
-            isCanManageDBs={isCanManageDBs}
-            scrollContainerRef={scrollContainerRef}
+            onVisibilityChange={handleHealthcheckVisibilityChange}
           />
+
+          {isPhysicalDatabase ? (
+            <PhysicalBackupsComponent
+              database={database}
+              isCanManageDBs={isCanManageDBs}
+              isDirectlyUnderTab={!isHealthcheckVisible}
+              scrollContainerRef={scrollContainerRef}
+            />
+          ) : (
+            <LogicalBackupsComponent
+              database={database}
+              isCanManageDBs={isCanManageDBs}
+              isDirectlyUnderTab={!isHealthcheckVisible}
+              scrollContainerRef={scrollContainerRef}
+              onNavigateToVerifications={() => setCurrentTab('verifications')}
+            />
+          )}
         </>
+      )}
+
+      {currentTab === 'verifications' && isPostgresDatabase && (
+        <VerificationsComponent
+          database={database}
+          isCanManageDBs={isCanManageDBs}
+          isDirectlyUnderTab={true}
+          scrollContainerRef={scrollContainerRef}
+        />
       )}
     </div>
   );

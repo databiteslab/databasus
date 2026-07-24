@@ -1,10 +1,11 @@
 package healthcheck_attempt
 
 import (
-	"databasus-backend/internal/storage"
 	"time"
 
 	"github.com/google/uuid"
+
+	"databasus-backend/internal/storage"
 )
 
 type HealthcheckAttemptRepository struct{}

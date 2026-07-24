@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"testing"
 
-	"databasus-backend/internal/config"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+
 	audit_logs "databasus-backend/internal/features/audit_logs"
 	discord_notifier "databasus-backend/internal/features/notifiers/models/discord"
 	email_notifier "databasus-backend/internal/features/notifiers/models/email_notifier"
@@ -20,10 +23,6 @@ import (
 	workspaces_controllers "databasus-backend/internal/features/workspaces/controllers"
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
 	test_utils "databasus-backend/internal/util/testing"
-
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_SaveNewNotifier_NotifierReturnedViaGet(t *testing.T) {
@@ -159,13 +158,16 @@ func Test_SendTestNotificationDirect_NotificationSent(t *testing.T) {
 	router := createRouter()
 	workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
 
-	notifier := createTelegramNotifier(workspace.ID)
+	GetWebhookStub().ResetCalls()
+	notifier := createWebhookNotifier(workspace.ID)
 
 	response := test_utils.MakePostRequest(
 		t, router, "/api/v1/notifiers/direct-test", "Bearer "+owner.Token, *notifier, http.StatusOK,
 	)
 
 	assert.Contains(t, string(response.Body), "successful")
+	assert.Greater(t, GetWebhookStub().CallCount(), 0)
+
 	workspaces_testing.RemoveTestWorkspace(workspace, router)
 }
 
@@ -174,7 +176,8 @@ func Test_SendTestNotificationExisting_NotificationSent(t *testing.T) {
 	router := createRouter()
 	workspace := workspaces_testing.CreateTestWorkspace("Test Workspace", owner, router)
 
-	notifier := createTelegramNotifier(workspace.ID)
+	GetWebhookStub().ResetCalls()
+	notifier := createWebhookNotifier(workspace.ID)
 
 	var savedNotifier Notifier
 	test_utils.MakePostRequestAndUnmarshal(
@@ -197,6 +200,7 @@ func Test_SendTestNotificationExisting_NotificationSent(t *testing.T) {
 	)
 
 	assert.Contains(t, string(response.Body), "successful")
+	assert.Greater(t, GetWebhookStub().CallCount(), 0)
 
 	deleteNotifier(t, router, savedNotifier.ID, workspace.ID, owner.Token)
 	workspaces_testing.RemoveTestWorkspace(workspace, router)
@@ -455,7 +459,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 		name                string
 		notifierType        NotifierType
 		createNotifier      func(workspaceID uuid.UUID) *Notifier
-		updateNotifier      func(workspaceID uuid.UUID, notifierID uuid.UUID) *Notifier
+		updateNotifier      func(workspaceID, notifierID uuid.UUID) *Notifier
 		verifySensitiveData func(t *testing.T, notifier *Notifier)
 		verifyHiddenData    func(t *testing.T, notifier *Notifier)
 	}{
@@ -468,20 +472,24 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					Name:         "Test Telegram Notifier",
 					NotifierType: NotifierTypeTelegram,
 					TelegramNotifier: &telegram_notifier.TelegramNotifier{
-						BotToken:     "original-bot-token-12345",
-						TargetChatID: "123456789",
+						BotToken:       "original-bot-token-12345",
+						TargetChatID:   "123456789",
+						IsProxyEnabled: true,
+						ProxyURL:       "socks5://user:password@proxy.example.com:1080",
 					},
 				}
 			},
-			updateNotifier: func(workspaceID uuid.UUID, notifierID uuid.UUID) *Notifier {
+			updateNotifier: func(workspaceID, notifierID uuid.UUID) *Notifier {
 				return &Notifier{
 					ID:           notifierID,
 					WorkspaceID:  workspaceID,
 					Name:         "Updated Telegram Notifier",
 					NotifierType: NotifierTypeTelegram,
 					TelegramNotifier: &telegram_notifier.TelegramNotifier{
-						BotToken:     "",
-						TargetChatID: "987654321",
+						BotToken:       "",
+						TargetChatID:   "987654321",
+						IsProxyEnabled: true,
+						ProxyURL:       "",
 					},
 				}
 			},
@@ -491,11 +499,22 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					isEncrypted(notifier.TelegramNotifier.BotToken),
 					"BotToken should be encrypted in DB",
 				)
-				decrypted := decryptField(t, notifier.ID, notifier.TelegramNotifier.BotToken)
+				decrypted := decryptField(t, notifier.TelegramNotifier.BotToken)
 				assert.Equal(t, "original-bot-token-12345", decrypted)
+
+				assert.True(
+					t,
+					isEncrypted(notifier.TelegramNotifier.ProxyURL),
+					"ProxyURL should be encrypted in DB",
+				)
+				decryptedProxyURL := decryptField(t, notifier.TelegramNotifier.ProxyURL)
+				assert.Equal(t, "socks5://user:password@proxy.example.com:1080", decryptedProxyURL)
+				assert.True(t, notifier.TelegramNotifier.IsProxyEnabled)
 			},
 			verifyHiddenData: func(t *testing.T, notifier *Notifier) {
 				assert.Equal(t, "", notifier.TelegramNotifier.BotToken)
+				assert.Equal(t, "", notifier.TelegramNotifier.ProxyURL)
+				assert.True(t, notifier.TelegramNotifier.IsProxyEnabled)
 			},
 		},
 		{
@@ -515,7 +534,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					},
 				}
 			},
-			updateNotifier: func(workspaceID uuid.UUID, notifierID uuid.UUID) *Notifier {
+			updateNotifier: func(workspaceID, notifierID uuid.UUID) *Notifier {
 				return &Notifier{
 					ID:           notifierID,
 					WorkspaceID:  workspaceID,
@@ -536,7 +555,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					isEncrypted(notifier.EmailNotifier.SMTPPassword),
 					"SMTPPassword should be encrypted in DB",
 				)
-				decrypted := decryptField(t, notifier.ID, notifier.EmailNotifier.SMTPPassword)
+				decrypted := decryptField(t, notifier.EmailNotifier.SMTPPassword)
 				assert.Equal(t, "original-password-secret", decrypted)
 			},
 			verifyHiddenData: func(t *testing.T, notifier *Notifier) {
@@ -557,7 +576,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					},
 				}
 			},
-			updateNotifier: func(workspaceID uuid.UUID, notifierID uuid.UUID) *Notifier {
+			updateNotifier: func(workspaceID, notifierID uuid.UUID) *Notifier {
 				return &Notifier{
 					ID:           notifierID,
 					WorkspaceID:  workspaceID,
@@ -575,7 +594,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					isEncrypted(notifier.SlackNotifier.BotToken),
 					"BotToken should be encrypted in DB",
 				)
-				decrypted := decryptField(t, notifier.ID, notifier.SlackNotifier.BotToken)
+				decrypted := decryptField(t, notifier.SlackNotifier.BotToken)
 				assert.Equal(t, "xoxb-original-slack-token", decrypted)
 			},
 			verifyHiddenData: func(t *testing.T, notifier *Notifier) {
@@ -595,7 +614,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					},
 				}
 			},
-			updateNotifier: func(workspaceID uuid.UUID, notifierID uuid.UUID) *Notifier {
+			updateNotifier: func(workspaceID, notifierID uuid.UUID) *Notifier {
 				return &Notifier{
 					ID:           notifierID,
 					WorkspaceID:  workspaceID,
@@ -614,7 +633,6 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 				)
 				decrypted := decryptField(
 					t,
-					notifier.ID,
 					notifier.DiscordNotifier.ChannelWebhookURL,
 				)
 				assert.Equal(t, "https://discord.com/api/webhooks/123/original-token", decrypted)
@@ -636,7 +654,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					},
 				}
 			},
-			updateNotifier: func(workspaceID uuid.UUID, notifierID uuid.UUID) *Notifier {
+			updateNotifier: func(workspaceID, notifierID uuid.UUID) *Notifier {
 				return &Notifier{
 					ID:           notifierID,
 					WorkspaceID:  workspaceID,
@@ -653,7 +671,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					isEncrypted(notifier.TeamsNotifier.WebhookURL),
 					"WebhookURL should be encrypted in DB",
 				)
-				decrypted := decryptField(t, notifier.ID, notifier.TeamsNotifier.WebhookURL)
+				decrypted := decryptField(t, notifier.TeamsNotifier.WebhookURL)
 				assert.Equal(
 					t,
 					"https://outlook.office.com/webhook/original-token",
@@ -682,7 +700,7 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 					},
 				}
 			},
-			updateNotifier: func(workspaceID uuid.UUID, notifierID uuid.UUID) *Notifier {
+			updateNotifier: func(workspaceID, notifierID uuid.UUID) *Notifier {
 				return &Notifier{
 					ID:           notifierID,
 					WorkspaceID:  workspaceID,
@@ -711,7 +729,6 @@ func Test_NotifierSensitiveDataLifecycle_AllTypes(t *testing.T) {
 				)
 				decrypted := decryptField(
 					t,
-					notifier.ID,
 					notifier.WebhookNotifier.Headers[0].Value,
 				)
 				assert.Equal(t, "Bearer updated-token", decrypted)
@@ -821,8 +838,10 @@ func Test_CreateNotifier_AllSensitiveFieldsEncryptedInDB(t *testing.T) {
 					Name:         "Test Telegram",
 					NotifierType: NotifierTypeTelegram,
 					TelegramNotifier: &telegram_notifier.TelegramNotifier{
-						BotToken:     "plain-telegram-token-123",
-						TargetChatID: "123456789",
+						BotToken:       "plain-telegram-token-123",
+						TargetChatID:   "123456789",
+						IsProxyEnabled: true,
+						ProxyURL:       "http://proxy.example.com:8080",
 					},
 				}
 			},
@@ -832,8 +851,16 @@ func Test_CreateNotifier_AllSensitiveFieldsEncryptedInDB(t *testing.T) {
 					isEncrypted(notifier.TelegramNotifier.BotToken),
 					"BotToken should be encrypted",
 				)
-				decrypted := decryptField(t, notifier.ID, notifier.TelegramNotifier.BotToken)
+				decrypted := decryptField(t, notifier.TelegramNotifier.BotToken)
 				assert.Equal(t, "plain-telegram-token-123", decrypted)
+
+				assert.True(
+					t,
+					isEncrypted(notifier.TelegramNotifier.ProxyURL),
+					"ProxyURL should be encrypted",
+				)
+				decryptedProxyURL := decryptField(t, notifier.TelegramNotifier.ProxyURL)
+				assert.Equal(t, "http://proxy.example.com:8080", decryptedProxyURL)
 			},
 		},
 		{
@@ -859,7 +886,7 @@ func Test_CreateNotifier_AllSensitiveFieldsEncryptedInDB(t *testing.T) {
 					isEncrypted(notifier.EmailNotifier.SMTPPassword),
 					"SMTPPassword should be encrypted",
 				)
-				decrypted := decryptField(t, notifier.ID, notifier.EmailNotifier.SMTPPassword)
+				decrypted := decryptField(t, notifier.EmailNotifier.SMTPPassword)
 				assert.Equal(t, "plain-smtp-password-456", decrypted)
 			},
 		},
@@ -882,7 +909,7 @@ func Test_CreateNotifier_AllSensitiveFieldsEncryptedInDB(t *testing.T) {
 					isEncrypted(notifier.SlackNotifier.BotToken),
 					"BotToken should be encrypted",
 				)
-				decrypted := decryptField(t, notifier.ID, notifier.SlackNotifier.BotToken)
+				decrypted := decryptField(t, notifier.SlackNotifier.BotToken)
 				assert.Equal(t, "plain-slack-token-789", decrypted)
 			},
 		},
@@ -906,7 +933,6 @@ func Test_CreateNotifier_AllSensitiveFieldsEncryptedInDB(t *testing.T) {
 				)
 				decrypted := decryptField(
 					t,
-					notifier.ID,
 					notifier.DiscordNotifier.ChannelWebhookURL,
 				)
 				assert.Equal(t, "https://discord.com/api/webhooks/123/abc", decrypted)
@@ -930,7 +956,7 @@ func Test_CreateNotifier_AllSensitiveFieldsEncryptedInDB(t *testing.T) {
 					isEncrypted(notifier.TeamsNotifier.WebhookURL),
 					"WebhookURL should be encrypted",
 				)
-				decrypted := decryptField(t, notifier.ID, notifier.TeamsNotifier.WebhookURL)
+				decrypted := decryptField(t, notifier.TeamsNotifier.WebhookURL)
 				assert.Equal(t, "https://outlook.office.com/webhook/test123", decrypted)
 			},
 		},
@@ -970,7 +996,6 @@ func Test_CreateNotifier_AllSensitiveFieldsEncryptedInDB(t *testing.T) {
 				)
 				decrypted1 := decryptField(
 					t,
-					notifier.ID,
 					notifier.WebhookNotifier.Headers[0].Value,
 				)
 				assert.Equal(t, "Bearer secret-token-12345", decrypted1)
@@ -982,7 +1007,6 @@ func Test_CreateNotifier_AllSensitiveFieldsEncryptedInDB(t *testing.T) {
 				)
 				decrypted2 := decryptField(
 					t,
-					notifier.ID,
 					notifier.WebhookNotifier.Headers[1].Value,
 				)
 				assert.Equal(t, "api-key-67890", decrypted2)
@@ -1246,26 +1270,25 @@ func createNewNotifier(workspaceID uuid.UUID) *Notifier {
 		Name:         "Test Notifier " + uuid.New().String(),
 		NotifierType: NotifierTypeWebhook,
 		WebhookNotifier: &webhook_notifier.WebhookNotifier{
-			WebhookURL:    "https://webhook.site/test-" + uuid.New().String(),
+			WebhookURL:    GetWebhookStub().URL() + "/test-" + uuid.New().String(),
 			WebhookMethod: webhook_notifier.WebhookMethodPOST,
 		},
 	}
 }
 
-func createTelegramNotifier(workspaceID uuid.UUID) *Notifier {
-	env := config.GetEnv()
+func createWebhookNotifier(workspaceID uuid.UUID) *Notifier {
 	return &Notifier{
 		WorkspaceID:  workspaceID,
-		Name:         "Test Telegram Notifier " + uuid.New().String(),
-		NotifierType: NotifierTypeTelegram,
-		TelegramNotifier: &telegram_notifier.TelegramNotifier{
-			BotToken:     env.TestTelegramBotToken,
-			TargetChatID: env.TestTelegramChatID,
+		Name:         "Test Webhook Notifier " + uuid.New().String(),
+		NotifierType: NotifierTypeWebhook,
+		WebhookNotifier: &webhook_notifier.WebhookNotifier{
+			WebhookURL:    GetWebhookStub().URL(),
+			WebhookMethod: webhook_notifier.WebhookMethodGET,
 		},
 	}
 }
 
-func verifyNotifierData(t *testing.T, expected *Notifier, actual *Notifier) {
+func verifyNotifierData(t *testing.T, expected, actual *Notifier) {
 	assert.Equal(t, expected.Name, actual.Name)
 	assert.Equal(t, expected.NotifierType, actual.NotifierType)
 	assert.Equal(t, expected.WorkspaceID, actual.WorkspaceID)
@@ -1290,9 +1313,9 @@ func isEncrypted(value string) bool {
 	return len(value) > 4 && value[:4] == "enc:"
 }
 
-func decryptField(t *testing.T, notifierID uuid.UUID, encryptedValue string) string {
+func decryptField(t *testing.T, encryptedValue string) string {
 	encryptor := GetNotifierService().fieldEncryptor
-	decrypted, err := encryptor.Decrypt(notifierID, encryptedValue)
+	decrypted, err := encryptor.Decrypt(encryptedValue)
 	assert.NoError(t, err)
 	return decrypted
 }

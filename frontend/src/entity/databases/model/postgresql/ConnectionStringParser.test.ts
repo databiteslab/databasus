@@ -5,6 +5,7 @@ import {
   type ParseError,
   type ParseResult,
 } from './ConnectionStringParser';
+import { PostgresSslMode } from './PostgresSslMode';
 
 describe('ConnectionStringParser', () => {
   // Helper to assert successful parse
@@ -30,7 +31,7 @@ describe('ConnectionStringParser', () => {
       expect(result.username).toBe('myuser');
       expect(result.password).toBe('mypassword');
       expect(result.database).toBe('mydb');
-      expect(result.isHttps).toBe(false);
+      expect(result.sslMode).toBe(PostgresSslMode.Disable);
     });
 
     it('should default port to 5432 when not specified', () => {
@@ -147,7 +148,7 @@ describe('ConnectionStringParser', () => {
         ),
       );
 
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.Require);
     });
 
     it('should return error for JDBC without user parameter', () => {
@@ -223,7 +224,7 @@ describe('ConnectionStringParser', () => {
       expect(result.port).toBe(25060);
       expect(result.username).toBe('doadmin');
       expect(result.database).toBe('defaultdb');
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.Require);
     });
   });
 
@@ -253,7 +254,7 @@ describe('ConnectionStringParser', () => {
       expect(result.username).toBe('myuser');
       expect(result.password).toBe('mypassword');
       expect(result.database).toBe('mydb');
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.Require);
     });
   });
 
@@ -281,47 +282,71 @@ describe('ConnectionStringParser', () => {
 
       expect(result.host).toBe('free-tier.gcp-us-central1.cockroachlabs.cloud');
       expect(result.port).toBe(26257);
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.VerifyFull);
     });
   });
 
   describe('SSL Mode Handling', () => {
-    it('should set isHttps=true for sslmode=require', () => {
+    it('should set sslMode=require for sslmode=require', () => {
       const result = expectSuccess(
         ConnectionStringParser.parse('postgresql://u:p@host:5432/db?sslmode=require'),
       );
 
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.Require);
     });
 
-    it('should set isHttps=true for sslmode=verify-ca', () => {
+    it('should set sslMode=verify-ca for sslmode=verify-ca', () => {
       const result = expectSuccess(
         ConnectionStringParser.parse('postgresql://u:p@host:5432/db?sslmode=verify-ca'),
       );
 
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.VerifyCa);
     });
 
-    it('should set isHttps=true for sslmode=verify-full', () => {
+    it('should set sslMode=verify-full for sslmode=verify-full', () => {
       const result = expectSuccess(
         ConnectionStringParser.parse('postgresql://u:p@host:5432/db?sslmode=verify-full'),
       );
 
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.VerifyFull);
     });
 
-    it('should set isHttps=false for sslmode=disable', () => {
+    it('should set sslMode=disable for sslmode=disable', () => {
       const result = expectSuccess(
         ConnectionStringParser.parse('postgresql://u:p@host:5432/db?sslmode=disable'),
       );
 
-      expect(result.isHttps).toBe(false);
+      expect(result.sslMode).toBe(PostgresSslMode.Disable);
     });
 
-    it('should set isHttps=false when no sslmode specified', () => {
+    it('should derive sslMode=require from a remote host when no sslmode specified', () => {
       const result = expectSuccess(ConnectionStringParser.parse('postgresql://u:p@host:5432/db'));
 
-      expect(result.isHttps).toBe(false);
+      expect(result.sslMode).toBe(PostgresSslMode.Require);
+    });
+
+    it('should derive sslMode=disable from localhost when no sslmode specified', () => {
+      const result = expectSuccess(
+        ConnectionStringParser.parse('postgresql://u:p@localhost:5432/db'),
+      );
+
+      expect(result.sslMode).toBe(PostgresSslMode.Disable);
+    });
+
+    it('should derive sslMode=disable from an IPv4 host when no sslmode specified', () => {
+      const result = expectSuccess(
+        ConnectionStringParser.parse('postgresql://u:p@192.168.1.10:5432/db'),
+      );
+
+      expect(result.sslMode).toBe(PostgresSslMode.Disable);
+    });
+
+    it('should treat sslmode=prefer as disable', () => {
+      const result = expectSuccess(
+        ConnectionStringParser.parse('postgresql://u:p@host:5432/db?sslmode=prefer'),
+      );
+
+      expect(result.sslMode).toBe(PostgresSslMode.Disable);
     });
   });
 
@@ -395,7 +420,7 @@ describe('ConnectionStringParser', () => {
         ),
       );
 
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.Require);
     });
 
     it('should return error for libpq format missing host', () => {
@@ -513,7 +538,7 @@ describe('ConnectionStringParser', () => {
         ),
       );
 
-      expect(result.isHttps).toBe(true);
+      expect(result.sslMode).toBe(PostgresSslMode.Require);
       expect(result.database).toBe('db');
     });
 

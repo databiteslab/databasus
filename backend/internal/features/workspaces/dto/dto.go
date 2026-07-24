@@ -3,9 +3,9 @@ package workspaces_dto
 import (
 	"time"
 
-	users_enums "databasus-backend/internal/features/users/enums"
-
 	"github.com/google/uuid"
+
+	users_enums "databasus-backend/internal/features/users/enums"
 )
 
 type AddMemberStatus string

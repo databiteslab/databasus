@@ -18,9 +18,10 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"databasus-backend/internal/config"
-	backups_core "databasus-backend/internal/features/backups/backups/core"
+	backups_core_enums "databasus-backend/internal/features/backups/backups/core/enums"
+	backups_core_logical "databasus-backend/internal/features/backups/backups/core/logical"
 	"databasus-backend/internal/features/backups/backups/encryption"
-	backups_config "databasus-backend/internal/features/backups/config"
+	backups_config_logical "databasus-backend/internal/features/backups/config/logical"
 	"databasus-backend/internal/features/databases"
 	mariadbtypes "databasus-backend/internal/features/databases/databases/mariadb"
 	encryption_secrets "databasus-backend/internal/features/encryption/secrets"
@@ -39,9 +40,9 @@ func (uc *RestoreMariadbBackupUsecase) Execute(
 	parentCtx context.Context,
 	originalDB *databases.Database,
 	restoringToDB *databases.Database,
-	backupConfig *backups_config.BackupConfig,
+	backupConfig *backups_config_logical.LogicalBackupConfig,
 	restore restores_core.Restore,
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 	storage *storages.Storage,
 ) error {
 	if originalDB.Type != databases.DatabaseTypeMariadb {
@@ -70,9 +71,23 @@ func (uc *RestoreMariadbBackupUsecase) Execute(
 		"--verbose",
 	}
 
+	// Disable Galera Cluster replication for the restore session to prevent
+	// "Maximum writeset size exceeded" errors on large restores.
+	// wsrep_on is available in MariaDB 10.1+ (all builds with Galera support).
+	// On non-Galera instances the variable still exists but is a no-op.
+	// Setting it requires the SUPER privilege, so it is skippable for managed
+	// clusters that deny SUPER (at the risk of writeset-size errors on big restores).
+	if mdb.Version != tools.MariadbVersion55 && !mdb.IsSkipGaleraDisable {
+		args = append(args, "--init-command=SET SESSION wsrep_on=OFF")
+	}
+
+	args = append(args, "--max-allowed-packet=1G")
+
 	if mdb.IsHttps {
 		args = append(args, "--ssl")
 		args = append(args, "--skip-ssl-verify-server-cert")
+	} else {
+		args = append(args, "--skip-ssl")
 	}
 
 	if mdb.Database != nil && *mdb.Database != "" {
@@ -82,12 +97,7 @@ func (uc *RestoreMariadbBackupUsecase) Execute(
 	return uc.restoreFromStorage(
 		parentCtx,
 		originalDB,
-		tools.GetMariadbExecutable(
-			tools.MariadbExecutableMariadb,
-			mdb.Version,
-			config.GetEnv().EnvMode,
-			config.GetEnv().MariadbInstallDir,
-		),
+		tools.GetMariadbExecutable(mdb.Version, tools.MariadbExecutableMariadb),
 		args,
 		mdb.Password,
 		backup,
@@ -102,7 +112,7 @@ func (uc *RestoreMariadbBackupUsecase) restoreFromStorage(
 	mariadbBin string,
 	args []string,
 	password string,
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 	storage *storages.Storage,
 	mdbConfig *mariadbtypes.MariadbDatabase,
 ) error {
@@ -129,7 +139,7 @@ func (uc *RestoreMariadbBackupUsecase) restoreFromStorage(
 	}()
 
 	fieldEncryptor := util_encryption.GetFieldEncryptor()
-	decryptedPassword, err := fieldEncryptor.Decrypt(database.ID, password)
+	decryptedPassword, err := fieldEncryptor.Decrypt(password)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt password: %w", err)
 	}
@@ -169,7 +179,7 @@ func (uc *RestoreMariadbBackupUsecase) executeMariadbRestore(
 	args []string,
 	myCnfFile string,
 	backupReader io.ReadCloser,
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 ) error {
 	fullArgs := append([]string{"--defaults-file=" + myCnfFile}, args...)
 
@@ -178,7 +188,7 @@ func (uc *RestoreMariadbBackupUsecase) executeMariadbRestore(
 
 	var inputReader io.Reader = backupReader
 
-	if backup.Encryption == backups_config.BackupEncryptionEncrypted {
+	if backup.Encryption == backups_core_enums.BackupEncryptionEncrypted {
 		decryptReader, err := uc.setupDecryption(backupReader, backup)
 		if err != nil {
 			return fmt.Errorf("failed to setup decryption: %w", err)
@@ -241,7 +251,7 @@ func (uc *RestoreMariadbBackupUsecase) executeMariadbRestore(
 
 func (uc *RestoreMariadbBackupUsecase) setupDecryption(
 	reader io.Reader,
-	backup *backups_core.Backup,
+	backup *backups_core_logical.LogicalBackup,
 ) (io.Reader, error) {
 	if backup.EncryptionSalt == nil || backup.EncryptionIV == nil {
 		return nil, fmt.Errorf("backup is encrypted but missing encryption metadata")
@@ -281,20 +291,14 @@ func (uc *RestoreMariadbBackupUsecase) createTempMyCnfFile(
 	mdbConfig *mariadbtypes.MariadbDatabase,
 	password string,
 ) (string, error) {
-	tempFolder := config.GetEnv().TempFolder
-	if err := os.MkdirAll(tempFolder, 0700); err != nil {
-		return "", fmt.Errorf("failed to ensure temp folder exists: %w", err)
-	}
-	if err := os.Chmod(tempFolder, 0700); err != nil {
-		return "", fmt.Errorf("failed to set temp folder permissions: %w", err)
-	}
-
-	tempDir, err := os.MkdirTemp(tempFolder, "mycnf_"+uuid.New().String())
+	// Credential files use OS temp dir (/tmp) because some filesystems
+	// (e.g. ZFS on TrueNAS) ignore chmod, causing "group or world access" errors.
+	tempDir, err := os.MkdirTemp(os.TempDir(), "mycnf_"+uuid.New().String())
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
-	if err := os.Chmod(tempDir, 0700); err != nil {
+	if err := os.Chmod(tempDir, 0o700); err != nil {
 		_ = os.RemoveAll(tempDir)
 		return "", fmt.Errorf("failed to set temp directory permissions: %w", err)
 	}
@@ -314,7 +318,7 @@ port=%d
 		content += "ssl=false\n"
 	}
 
-	err = os.WriteFile(myCnfFile, []byte(content), 0600)
+	err = os.WriteFile(myCnfFile, []byte(content), 0o600)
 	if err != nil {
 		_ = os.RemoveAll(tempDir)
 		return "", fmt.Errorf("failed to write .my.cnf: %w", err)
@@ -375,6 +379,13 @@ func (uc *RestoreMariadbBackupUsecase) handleMariadbRestoreError(
 	if containsIgnoreCase(stderrStr, "timeout") {
 		return fmt.Errorf(
 			"MariaDB connection timeout. stderr: %s",
+			stderrStr,
+		)
+	}
+
+	if containsIgnoreCase(stderrStr, "writeset size exceeded") {
+		return fmt.Errorf(
+			"MariaDB Galera Cluster writeset size limit exceeded. Try increasing wsrep_max_ws_size on your cluster nodes. stderr: %s",
 			stderrStr,
 		)
 	}

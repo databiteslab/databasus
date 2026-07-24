@@ -1,11 +1,12 @@
 import { CopyOutlined, DownOutlined, InfoCircleOutlined, UpOutlined } from '@ant-design/icons';
-import { App, Button, Checkbox, Input, InputNumber, Switch, Tooltip } from 'antd';
+import { App, Button, Checkbox, Input, InputNumber, Select, Switch, Tooltip } from 'antd';
 import { useEffect, useState } from 'react';
 
-import { IS_CLOUD } from '../../../../constants';
 import { type Database, databaseApi } from '../../../../entity/databases';
 import { MariadbConnectionStringParser } from '../../../../entity/databases/model/mariadb/MariadbConnectionStringParser';
+import { ClipboardHelper } from '../../../../shared/lib/ClipboardHelper';
 import { ToastHelper } from '../../../../shared/toast';
+import { ClipboardPasteModalComponent } from '../../../../shared/ui';
 
 interface Props {
   database: Database;
@@ -46,44 +47,59 @@ export const EditMariaDbSpecificDataComponent = ({
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [isConnectionFailed, setIsConnectionFailed] = useState(false);
 
-  const hasAdvancedValues = !!database.mariadb?.isExcludeEvents;
+  const hasAdvancedValues =
+    !!database.mariadb?.isExcludeEvents ||
+    !!database.mariadb?.isUseExtendedInsert ||
+    !!database.mariadb?.isSkipGaleraDisable ||
+    !!database.mariadb?.excludeTables?.length;
   const [isShowAdvanced, setShowAdvanced] = useState(hasAdvancedValues);
 
+  const [isShowPasteModal, setIsShowPasteModal] = useState(false);
+
+  const applyConnectionString = (text: string) => {
+    const trimmedText = text.trim();
+
+    if (!trimmedText) {
+      message.error('Clipboard is empty');
+      return;
+    }
+
+    const result = MariadbConnectionStringParser.parse(trimmedText);
+
+    if ('error' in result) {
+      message.error(result.error);
+      return;
+    }
+
+    if (!editingDatabase?.mariadb) return;
+
+    const updatedDatabase: Database = {
+      ...editingDatabase,
+      mariadb: {
+        ...editingDatabase.mariadb,
+        host: result.host,
+        port: result.port,
+        username: result.username,
+        password: result.password,
+        database: result.database,
+        isHttps: result.isHttps,
+      },
+    };
+
+    setEditingDatabase(updatedDatabase);
+    setIsConnectionTested(false);
+    message.success('Connection string parsed successfully');
+  };
+
   const parseFromClipboard = async () => {
+    if (!ClipboardHelper.isClipboardApiAvailable()) {
+      setIsShowPasteModal(true);
+      return;
+    }
+
     try {
-      const text = await navigator.clipboard.readText();
-      const trimmedText = text.trim();
-
-      if (!trimmedText) {
-        message.error('Clipboard is empty');
-        return;
-      }
-
-      const result = MariadbConnectionStringParser.parse(trimmedText);
-
-      if ('error' in result) {
-        message.error(result.error);
-        return;
-      }
-
-      if (!editingDatabase?.mariadb) return;
-
-      const updatedDatabase: Database = {
-        ...editingDatabase,
-        mariadb: {
-          ...editingDatabase.mariadb,
-          host: result.host,
-          port: result.port,
-          username: result.username,
-          password: result.password,
-          database: result.database,
-          isHttps: result.isHttps,
-        },
-      };
-
-      setEditingDatabase(updatedDatabase);
-      setIsConnectionTested(false);
-      message.success('Connection string parsed successfully');
+      const text = await ClipboardHelper.readFromClipboard();
+      applyConnectionString(text);
     } catch {
       message.error('Failed to read clipboard. Please check browser permissions.');
     }
@@ -200,7 +216,7 @@ export const EditMariaDbSpecificDataComponent = ({
         />
       </div>
 
-      {isLocalhostDb && !IS_CLOUD && (
+      {isLocalhostDb && (
         <div className="mb-1 flex">
           <div className="min-w-[150px]" />
           <div className="max-w-[200px] text-xs text-gray-500 dark:text-gray-400">
@@ -334,34 +350,118 @@ export const EditMariaDbSpecificDataComponent = ({
       </div>
 
       {isShowAdvanced && (
-        <div className="mb-1 flex w-full items-center">
-          <div className="min-w-[150px]">Exclude events</div>
-          <div className="flex items-center">
-            <Checkbox
-              checked={editingDatabase.mariadb?.isExcludeEvents || false}
-              onChange={(e) => {
+        <>
+          <div className="mb-1 flex w-full items-center">
+            <div className="min-w-[150px]">Exclude events</div>
+            <div className="flex items-center">
+              <Checkbox
+                checked={editingDatabase.mariadb?.isExcludeEvents || false}
+                onChange={(e) => {
+                  if (!editingDatabase.mariadb) return;
+
+                  setEditingDatabase({
+                    ...editingDatabase,
+                    mariadb: {
+                      ...editingDatabase.mariadb,
+                      isExcludeEvents: e.target.checked,
+                    },
+                  });
+                }}
+              >
+                Skip events
+              </Checkbox>
+
+              <Tooltip
+                className="cursor-pointer"
+                title="Skip backing up database events. Enable this if the event scheduler is disabled on your MariaDB server."
+              >
+                <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
+              </Tooltip>
+            </div>
+          </div>
+
+          <div className="mb-1 flex w-full items-center">
+            <div className="min-w-[150px]">Use extended inserts</div>
+            <div className="flex items-center">
+              <Checkbox
+                checked={editingDatabase.mariadb?.isUseExtendedInsert || false}
+                onChange={(e) => {
+                  if (!editingDatabase.mariadb) return;
+
+                  setEditingDatabase({
+                    ...editingDatabase,
+                    mariadb: {
+                      ...editingDatabase.mariadb,
+                      isUseExtendedInsert: e.target.checked,
+                    },
+                  });
+                }}
+              >
+                Enable extended inserts
+              </Checkbox>
+
+              <Tooltip
+                className="cursor-pointer"
+                title="Batch multiple rows per INSERT for much faster restores. Off by default because it uses more memory during backup - enable only if restores are slow and your server has enough memory."
+              >
+                <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
+              </Tooltip>
+            </div>
+          </div>
+
+          <div className="mb-1 flex w-full items-center">
+            <div className="min-w-[150px]">Galera replication</div>
+            <div className="flex items-center">
+              <Checkbox
+                checked={editingDatabase.mariadb?.isSkipGaleraDisable || false}
+                onChange={(e) => {
+                  if (!editingDatabase.mariadb) return;
+
+                  setEditingDatabase({
+                    ...editingDatabase,
+                    mariadb: {
+                      ...editingDatabase.mariadb,
+                      isSkipGaleraDisable: e.target.checked,
+                    },
+                  });
+                }}
+              >
+                Skip disabling on restore
+              </Checkbox>
+
+              <Tooltip
+                className="cursor-pointer"
+                title="By default Databasus runs SET SESSION wsrep_on=OFF during restore to avoid Galera writeset-size errors. That requires the SUPER privilege. Enable this to skip it if your managed provider denies SUPER - large restores may then hit Galera writeset limits."
+              >
+                <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
+              </Tooltip>
+            </div>
+          </div>
+
+          <div className="mb-1 flex w-full items-center">
+            <div className="min-w-[150px]">Exclude tables</div>
+            <Select
+              mode="tags"
+              value={editingDatabase.mariadb?.excludeTables || []}
+              onChange={(values) => {
                 if (!editingDatabase.mariadb) return;
 
                 setEditingDatabase({
                   ...editingDatabase,
-                  mariadb: {
-                    ...editingDatabase.mariadb,
-                    isExcludeEvents: e.target.checked,
-                  },
+                  mariadb: { ...editingDatabase.mariadb, excludeTables: values },
                 });
               }}
-            >
-              Skip events
-            </Checkbox>
+              size="small"
+              className="max-w-[200px] grow"
+              placeholder="No tables excluded"
+              tokenSeparators={[',']}
+            />
 
-            <Tooltip
-              className="cursor-pointer"
-              title="Skip backing up database events. Enable this if the event scheduler is disabled on your MariaDB server."
-            >
+            <Tooltip className="cursor-pointer" title="Table names to exclude from the backup.">
               <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
             </Tooltip>
           </div>
-        </div>
+        </>
       )}
 
       <div className="mt-5 flex">
@@ -402,12 +502,21 @@ export const EditMariaDbSpecificDataComponent = ({
         )}
       </div>
 
-      {isConnectionFailed && !IS_CLOUD && (
+      {isConnectionFailed && (
         <div className="mt-3 text-sm text-gray-500 dark:text-gray-400">
           If your database uses IP whitelist, make sure Databasus server IP is added to the allowed
           list.
         </div>
       )}
+
+      <ClipboardPasteModalComponent
+        open={isShowPasteModal}
+        onSubmit={(text) => {
+          setIsShowPasteModal(false);
+          applyConnectionString(text);
+        }}
+        onCancel={() => setIsShowPasteModal(false)}
+      />
     </div>
   );
 };

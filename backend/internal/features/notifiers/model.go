@@ -1,6 +1,12 @@
 package notifiers
 
 import (
+	"errors"
+	"log/slog"
+
+	"github.com/google/uuid"
+
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 	discord_notifier "databasus-backend/internal/features/notifiers/models/discord"
 	"databasus-backend/internal/features/notifiers/models/email_notifier"
 	slack_notifier "databasus-backend/internal/features/notifiers/models/slack"
@@ -8,10 +14,6 @@ import (
 	telegram_notifier "databasus-backend/internal/features/notifiers/models/telegram"
 	webhook_notifier "databasus-backend/internal/features/notifiers/models/webhook"
 	"databasus-backend/internal/util/encryption"
-	"errors"
-	"log/slog"
-
-	"github.com/google/uuid"
 )
 
 type Notifier struct {
@@ -22,12 +24,12 @@ type Notifier struct {
 	LastSendError *string      `json:"lastSendError" gorm:"column:last_send_error;type:text"`
 
 	// specific notifier
-	TelegramNotifier *telegram_notifier.TelegramNotifier `json:"telegramNotifier"        gorm:"foreignKey:NotifierID"`
-	EmailNotifier    *email_notifier.EmailNotifier       `json:"emailNotifier"           gorm:"foreignKey:NotifierID"`
-	WebhookNotifier  *webhook_notifier.WebhookNotifier   `json:"webhookNotifier"         gorm:"foreignKey:NotifierID"`
-	SlackNotifier    *slack_notifier.SlackNotifier       `json:"slackNotifier"           gorm:"foreignKey:NotifierID"`
-	DiscordNotifier  *discord_notifier.DiscordNotifier   `json:"discordNotifier"         gorm:"foreignKey:NotifierID"`
-	TeamsNotifier    *teams_notifier.TeamsNotifier       `json:"teamsNotifier,omitempty" gorm:"foreignKey:NotifierID;constraint:OnDelete:CASCADE"`
+	TelegramNotifier *telegram_notifier.TelegramNotifier `json:"telegramNotifier"       gorm:"foreignKey:NotifierID"`
+	EmailNotifier    *email_notifier.EmailNotifier       `json:"emailNotifier"          gorm:"foreignKey:NotifierID"`
+	WebhookNotifier  *webhook_notifier.WebhookNotifier   `json:"webhookNotifier"        gorm:"foreignKey:NotifierID"`
+	SlackNotifier    *slack_notifier.SlackNotifier       `json:"slackNotifier"          gorm:"foreignKey:NotifierID"`
+	DiscordNotifier  *discord_notifier.DiscordNotifier   `json:"discordNotifier"        gorm:"foreignKey:NotifierID"`
+	TeamsNotifier    *teams_notifier.TeamsNotifier       `json:"teamsNotifier,omitzero" gorm:"foreignKey:NotifierID;constraint:OnDelete:CASCADE"`
 }
 
 func (n *Notifier) TableName() string {
@@ -45,10 +47,9 @@ func (n *Notifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (n *Notifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading string,
-	message string,
+	notification notifier_models.Notification,
 ) error {
-	err := n.getSpecificNotifier().Send(encryptor, logger, heading, message)
+	err := n.getSpecificNotifier().Send(encryptor, logger, notification)
 
 	if err != nil {
 		lastSendError := err.Error()

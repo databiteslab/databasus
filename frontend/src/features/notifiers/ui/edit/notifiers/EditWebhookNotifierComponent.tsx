@@ -3,7 +3,12 @@ import { Button, Input, Select, Tooltip } from 'antd';
 import { useMemo } from 'react';
 
 import type { Notifier, WebhookHeader } from '../../../../../entity/notifiers';
+import { NotificationType } from '../../../../../entity/notifiers';
 import { WebhookMethod } from '../../../../../entity/notifiers/models/webhook/WebhookMethod';
+import {
+  DEFAULT_ACCEPT_NOTIFICATION_TYPES,
+  NOTIFICATION_TYPE_OPTIONS,
+} from '../../../lib/notificationTypeLabels';
 
 interface Props {
   notifier: Notifier;
@@ -41,15 +46,32 @@ export function EditWebhookNotifierComponent({ notifier, setNotifier, setUnsaved
 
   const jsonError = useMemo(() => validateJsonTemplate(bodyTemplate), [bodyTemplate]);
 
+  const acceptNotificationTypes =
+    notifier?.webhookNotifier?.acceptNotificationTypes || DEFAULT_ACCEPT_NOTIFICATION_TYPES;
+
   const updateWebhookNotifier = (updates: Partial<typeof notifier.webhookNotifier>) => {
     setNotifier({
       ...notifier,
       webhookNotifier: {
-        ...(notifier.webhookNotifier || { webhookUrl: '', webhookMethod: WebhookMethod.POST }),
+        ...(notifier.webhookNotifier || {
+          webhookUrl: '',
+          webhookMethod: WebhookMethod.POST,
+          acceptNotificationTypes: [...DEFAULT_ACCEPT_NOTIFICATION_TYPES],
+        }),
         ...updates,
       },
     });
     setUnsaved();
+  };
+
+  const changeAcceptNotificationTypes = (selected: NotificationType[]) => {
+    const isAllSelected =
+      selected.length === 0 || selected[selected.length - 1] === NotificationType.ALL;
+    updateWebhookNotifier({
+      acceptNotificationTypes: isAllSelected
+        ? [NotificationType.ALL]
+        : selected.filter((type) => type !== NotificationType.ALL),
+    });
   };
 
   const addHeader = () => {
@@ -100,6 +122,19 @@ export function EditWebhookNotifierComponent({ notifier, setNotifier, setUnsaved
             ]}
           />
         </div>
+      </div>
+
+      <div className="mt-1 mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
+        <div className="mb-1 min-w-[150px] sm:mb-0">Send on</div>
+        <Select
+          mode="multiple"
+          value={acceptNotificationTypes}
+          onChange={(value) => changeAcceptNotificationTypes(value as NotificationType[])}
+          size="small"
+          className="w-full max-w-[250px]"
+          options={NOTIFICATION_TYPE_OPTIONS}
+          placeholder="Select notification types"
+        />
       </div>
 
       <div className="mt-3 mb-1 flex w-full flex-col items-start">

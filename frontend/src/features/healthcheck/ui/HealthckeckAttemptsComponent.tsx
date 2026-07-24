@@ -13,6 +13,7 @@ import { getUserShortTimeFormat } from '../../../shared/time/getUserTimeFormat';
 
 interface Props {
   database: Database;
+  onVisibilityChange?: (isVisible: boolean) => void;
 }
 
 let lastLoadTime = 0;
@@ -39,7 +40,7 @@ const getAfterDateByPeriod = (period: 'today' | '7d' | '30d' | 'all'): Date => {
   return afterDate;
 };
 
-export const HealthckeckAttemptsComponent = ({ database }: Props) => {
+export const HealthckeckAttemptsComponent = ({ database, onVisibilityChange }: Props) => {
   const [isHealthcheckConfigLoading, setIsHealthcheckConfigLoading] = useState(false);
   const [isShowHealthcheckConfig, setIsShowHealthcheckConfig] = useState(false);
 
@@ -87,8 +88,13 @@ export const HealthckeckAttemptsComponent = ({ database }: Props) => {
 
       setIsHealthcheckConfigLoading(false);
 
+      if (!healthcheckConfig.isHealthcheckEnabled) {
+        onVisibilityChange?.(false);
+      }
+
       if (healthcheckConfig.isHealthcheckEnabled) {
         setIsShowHealthcheckConfig(true);
+        onVisibilityChange?.(true);
         loadHealthcheckAttempts();
 
         // Set up interval only if healthcheck
@@ -118,11 +124,11 @@ export const HealthckeckAttemptsComponent = ({ database }: Props) => {
   }
 
   if (!isShowHealthcheckConfig) {
-    return <div />;
+    return null;
   }
 
   return (
-    <div className="w-full rounded-tr-md rounded-br-md rounded-bl-md bg-white p-3 shadow sm:p-5 dark:bg-gray-800">
+    <div className="mb-5 w-full rounded-tr-md rounded-br-md rounded-bl-md bg-white p-3 shadow sm:p-5 dark:bg-gray-800">
       <h2 className="text-lg font-bold sm:text-xl">Healthcheck attempts</h2>
 
       <div className="mt-3 flex flex-col gap-2 sm:mt-4 sm:flex-row sm:items-center">

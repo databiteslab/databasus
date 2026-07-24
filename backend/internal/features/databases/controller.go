@@ -1,13 +1,16 @@
 package databases
 
 import (
-	users_middleware "databasus-backend/internal/features/users/middleware"
-	users_services "databasus-backend/internal/features/users/services"
-	workspaces_services "databasus-backend/internal/features/workspaces/services"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	postgresql_shared "databasus-backend/internal/features/databases/databases/postgresql/shared"
+	users_middleware "databasus-backend/internal/features/users/middleware"
+	users_services "databasus-backend/internal/features/users/services"
+	workspaces_services "databasus-backend/internal/features/workspaces/services"
 )
 
 type DatabaseController struct {
@@ -29,6 +32,10 @@ func (c *DatabaseController) RegisterRoutes(router *gin.RouterGroup) {
 	router.GET("/databases/notifier/:id/databases-count", c.CountDatabasesByNotifier)
 	router.POST("/databases/is-readonly", c.IsUserReadOnly)
 	router.POST("/databases/create-readonly-user", c.CreateReadOnlyUser)
+	router.POST("/databases/create-replication-only-user", c.CreateReplicationOnlyUser)
+}
+
+func (c *DatabaseController) RegisterPublicRoutes(_ *gin.RouterGroup) {
 }
 
 // CreateDatabase
@@ -229,7 +236,7 @@ func (c *DatabaseController) TestDatabaseConnection(ctx *gin.Context) {
 	}
 
 	if err := c.databaseService.TestDatabaseConnection(user, id); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondConnectionTestError(ctx, err)
 		return
 	}
 
@@ -260,11 +267,22 @@ func (c *DatabaseController) TestDatabaseConnectionDirect(ctx *gin.Context) {
 	}
 
 	if err := c.databaseService.TestDatabaseConnectionDirect(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondConnectionTestError(ctx, err)
 		return
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{"message": "connection successful"})
+}
+
+// respondConnectionTestError writes a 400 carrying the machine-readable code for a classified
+// connection failure (physical PostgreSQL), or a plain error message for any other failure.
+func respondConnectionTestError(ctx *gin.Context, err error) {
+	if connErr, ok := errors.AsType[*postgresql_shared.ConnectionTestError](err); ok {
+		ctx.JSON(http.StatusBadRequest, gin.H{"code": connErr.Code})
+		return
+	}
+
+	ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 }
 
 // IsNotifierUsing
@@ -428,6 +446,44 @@ func (c *DatabaseController) CreateReadOnlyUser(ctx *gin.Context) {
 	}
 
 	username, password, err := c.databaseService.CreateReadOnlyUser(user, &request)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, CreateReadOnlyUserResponse{
+		Username: username,
+		Password: password,
+	})
+}
+
+// CreateReplicationOnlyUser
+// @Summary Create replication-only database user (PostgreSQL physical only)
+// @Description Provision a fresh PostgreSQL role with LOGIN + REPLICATION (or its cloud equivalent on RDS / Azure / GCP) and nothing more. Refuses for database types other than POSTGRES_PHYSICAL.
+// @Tags databases
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body Database true "Database configuration (must be POSTGRES_PHYSICAL)"
+// @Success 200 {object} CreateReadOnlyUserResponse
+// @Failure 400 {object} map[string]string
+// @Failure 401 {object} map[string]string
+// @Failure 403 {object} map[string]string
+// @Router /databases/create-replication-only-user [post]
+func (c *DatabaseController) CreateReplicationOnlyUser(ctx *gin.Context) {
+	user, ok := users_middleware.GetUserFromContext(ctx)
+	if !ok {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	var request Database
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	username, password, err := c.databaseService.CreateReplicationOnlyUser(user, &request)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

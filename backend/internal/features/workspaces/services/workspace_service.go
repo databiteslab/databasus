@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	audit_logs "databasus-backend/internal/features/audit_logs"
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_models "databasus-backend/internal/features/users/models"
@@ -13,8 +15,6 @@ import (
 	workspaces_interfaces "databasus-backend/internal/features/workspaces/interfaces"
 	workspaces_models "databasus-backend/internal/features/workspaces/models"
 	workspaces_repositories "databasus-backend/internal/features/workspaces/repositories"
-
-	"github.com/google/uuid"
 )
 
 type WorkspaceService struct {
@@ -37,7 +37,6 @@ func (s *WorkspaceService) CreateWorkspace(
 	creator *users_models.User,
 ) (*workspaces_dto.WorkspaceResponseDTO, error) {
 	settings, err := s.settingsService.GetSettings()
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to get settings: %w", err)
 	}
@@ -116,7 +115,6 @@ func (s *WorkspaceService) UpdateWorkspace(
 	user *users_models.User,
 ) (*workspaces_models.Workspace, error) {
 	canManage, err := s.CanUserManageWorkspace(workspaceID, user)
-
 	if err != nil {
 		return nil, err
 	}

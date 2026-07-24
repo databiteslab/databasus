@@ -1,8 +1,8 @@
 import { DownOutlined, InfoCircleOutlined, UpOutlined } from '@ant-design/icons';
-import { Checkbox, Input, Tooltip } from 'antd';
+import { Checkbox, Input, Select, Tooltip } from 'antd';
 import { useEffect, useState } from 'react';
 
-import type { Storage } from '../../../../../entity/storages';
+import { S3StorageClass, S3StorageClassLabels, type Storage } from '../../../../../entity/storages';
 
 interface Props {
   storage: Storage;
@@ -20,7 +20,8 @@ export function EditS3StorageComponent({
   const hasAdvancedValues =
     !!storage?.s3Storage?.s3Prefix ||
     !!storage?.s3Storage?.s3UseVirtualHostedStyle ||
-    !!storage?.s3Storage?.skipTLSVerify;
+    !!storage?.s3Storage?.skipTLSVerify ||
+    !!storage?.s3Storage?.s3StorageClass;
   const [showAdvanced, setShowAdvanced] = useState(hasAdvancedValues);
 
   useEffect(() => {
@@ -273,6 +274,40 @@ export function EditS3StorageComponent({
               <Tooltip
                 className="cursor-pointer"
                 title="Skip TLS certificate verification. Enable this if your S3-compatible storage uses a self-signed certificate. Warning: this reduces security."
+              >
+                <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
+              </Tooltip>
+            </div>
+          </div>
+
+          <div className="mb-1 flex w-full flex-col items-start sm:flex-row sm:items-center">
+            <div className="mb-1 min-w-[110px] sm:mb-0">Storage class</div>
+            <div className="flex items-center">
+              <Select
+                value={storage?.s3Storage?.s3StorageClass || S3StorageClass.DEFAULT}
+                options={Object.entries(S3StorageClassLabels).map(([value, label]) => ({
+                  value,
+                  label,
+                }))}
+                onChange={(value) => {
+                  if (!storage?.s3Storage) return;
+
+                  setStorage({
+                    ...storage,
+                    s3Storage: {
+                      ...storage.s3Storage,
+                      s3StorageClass: value,
+                    },
+                  });
+                  setUnsaved();
+                }}
+                size="small"
+                className="w-[250px] max-w-[250px]"
+              />
+
+              <Tooltip
+                className="cursor-pointer"
+                title="S3 storage class for uploaded objects. Leave as default for Standard. Some providers offer cheaper classes like One Zone IA. Do not use Glacier/Deep Archive — files must be immediately accessible for restores."
               >
                 <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
               </Tooltip>

@@ -21,18 +21,24 @@ func NewMultiHandler(
 }
 
 func (h *MultiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	if h.victoriaLogsWriter != nil {
+		return level >= slog.LevelDebug
+	}
+
 	return h.stdoutHandler.Enabled(ctx, level)
 }
 
 func (h *MultiHandler) Handle(ctx context.Context, record slog.Record) error {
-	// Send to stdout handler
-	if err := h.stdoutHandler.Handle(ctx, record); err != nil {
-		return err
+	// Send to stdout handler (only if level is enabled for stdout)
+	if h.stdoutHandler.Enabled(ctx, record.Level) {
+		if err := h.stdoutHandler.Handle(ctx, record); err != nil {
+			return err
+		}
 	}
 
 	// Send to VictoriaLogs if configured
 	if h.victoriaLogsWriter != nil {
-		attrs := make(map[string]interface{})
+		attrs := make(map[string]any)
 		record.Attrs(func(a slog.Attr) bool {
 			attrs[a.Key] = a.Value.Any()
 			return true

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,33 +15,27 @@ type HealthcheckAttemptBackgroundService struct {
 	checkDatabaseHealthUseCase *CheckDatabaseHealthUseCase
 	logger                     *slog.Logger
 
-	runOnce sync.Once
-	hasRun  atomic.Bool
+	hasRun atomic.Bool
 }
 
 func (s *HealthcheckAttemptBackgroundService) Run(ctx context.Context) {
-	wasAlreadyRun := s.hasRun.Load()
-
-	s.runOnce.Do(func() {
-		s.hasRun.Store(true)
-
-		// first healthcheck immediately
-		s.checkDatabases()
-
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.checkDatabases()
-			}
-		}
-	})
-
-	if wasAlreadyRun {
+	if s.hasRun.Swap(true) {
 		panic(fmt.Sprintf("%T.Run() called multiple times", s))
+	}
+
+	// first healthcheck immediately
+	s.checkDatabases()
+
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.checkDatabases()
+		}
 	}
 }
 

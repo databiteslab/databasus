@@ -1,10 +1,11 @@
 package users_models
 
 import (
-	users_enums "databasus-backend/internal/features/users/enums"
 	"time"
 
 	"github.com/google/uuid"
+
+	users_enums "databasus-backend/internal/features/users/enums"
 )
 
 type User struct {

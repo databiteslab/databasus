@@ -4,15 +4,15 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+
 	users_enums "databasus-backend/internal/features/users/enums"
 	users_testing "databasus-backend/internal/features/users/testing"
 	workspaces_dto "databasus-backend/internal/features/workspaces/dto"
 	workspaces_models "databasus-backend/internal/features/workspaces/models"
 	workspaces_testing "databasus-backend/internal/features/workspaces/testing"
 	test_utils "databasus-backend/internal/util/testing"
-
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_WorkspaceLifecycleE2E_CompletesSuccessfully(t *testing.T) {

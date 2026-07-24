@@ -2,6 +2,12 @@ package storages
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
+
+	"github.com/google/uuid"
+
 	azure_blob_storage "databasus-backend/internal/features/storages/models/azure_blob"
 	ftp_storage "databasus-backend/internal/features/storages/models/ftp"
 	google_drive_storage "databasus-backend/internal/features/storages/models/google_drive"
@@ -11,11 +17,6 @@ import (
 	s3_storage "databasus-backend/internal/features/storages/models/s3"
 	sftp_storage "databasus-backend/internal/features/storages/models/sftp"
 	"databasus-backend/internal/util/encryption"
-	"errors"
-	"io"
-	"log/slog"
-
-	"github.com/google/uuid"
 )
 
 type Storage struct {
@@ -24,7 +25,6 @@ type Storage struct {
 	Type          StorageType `json:"type"          gorm:"column:type;not null;type:text"`
 	Name          string      `json:"name"          gorm:"column:name;not null;type:text"`
 	LastSaveError *string     `json:"lastSaveError" gorm:"column:last_save_error;type:text"`
-	IsSystem      bool        `json:"isSystem"      gorm:"column:is_system;not null;default:false"`
 
 	// specific storage
 	LocalStorage       *local_storage.LocalStorage              `json:"localStorage"       gorm:"foreignKey:StorageID"`
@@ -87,17 +87,6 @@ func (s *Storage) HideSensitiveData() {
 	s.getSpecificStorage().HideSensitiveData()
 }
 
-func (s *Storage) HideAllData() {
-	s.LocalStorage = nil
-	s.S3Storage = nil
-	s.GoogleDriveStorage = nil
-	s.NASStorage = nil
-	s.AzureBlobStorage = nil
-	s.FTPStorage = nil
-	s.SFTPStorage = nil
-	s.RcloneStorage = nil
-}
-
 func (s *Storage) EncryptSensitiveData(encryptor encryption.FieldEncryptor) error {
 	return s.getSpecificStorage().EncryptSensitiveData(encryptor)
 }
@@ -105,40 +94,55 @@ func (s *Storage) EncryptSensitiveData(encryptor encryption.FieldEncryptor) erro
 func (s *Storage) Update(incoming *Storage) {
 	s.Name = incoming.Name
 	s.Type = incoming.Type
-	s.IsSystem = incoming.IsSystem
 
 	switch s.Type {
 	case StorageTypeLocal:
 		if s.LocalStorage != nil && incoming.LocalStorage != nil {
 			s.LocalStorage.Update(incoming.LocalStorage)
+		} else if incoming.LocalStorage != nil {
+			s.LocalStorage = incoming.LocalStorage
 		}
 	case StorageTypeS3:
 		if s.S3Storage != nil && incoming.S3Storage != nil {
 			s.S3Storage.Update(incoming.S3Storage)
+		} else if incoming.S3Storage != nil {
+			s.S3Storage = incoming.S3Storage
 		}
 	case StorageTypeGoogleDrive:
 		if s.GoogleDriveStorage != nil && incoming.GoogleDriveStorage != nil {
 			s.GoogleDriveStorage.Update(incoming.GoogleDriveStorage)
+		} else if incoming.GoogleDriveStorage != nil {
+			s.GoogleDriveStorage = incoming.GoogleDriveStorage
 		}
 	case StorageTypeNAS:
 		if s.NASStorage != nil && incoming.NASStorage != nil {
 			s.NASStorage.Update(incoming.NASStorage)
+		} else if incoming.NASStorage != nil {
+			s.NASStorage = incoming.NASStorage
 		}
 	case StorageTypeAzureBlob:
 		if s.AzureBlobStorage != nil && incoming.AzureBlobStorage != nil {
 			s.AzureBlobStorage.Update(incoming.AzureBlobStorage)
+		} else if incoming.AzureBlobStorage != nil {
+			s.AzureBlobStorage = incoming.AzureBlobStorage
 		}
 	case StorageTypeFTP:
 		if s.FTPStorage != nil && incoming.FTPStorage != nil {
 			s.FTPStorage.Update(incoming.FTPStorage)
+		} else if incoming.FTPStorage != nil {
+			s.FTPStorage = incoming.FTPStorage
 		}
 	case StorageTypeSFTP:
 		if s.SFTPStorage != nil && incoming.SFTPStorage != nil {
 			s.SFTPStorage.Update(incoming.SFTPStorage)
+		} else if incoming.SFTPStorage != nil {
+			s.SFTPStorage = incoming.SFTPStorage
 		}
 	case StorageTypeRclone:
 		if s.RcloneStorage != nil && incoming.RcloneStorage != nil {
 			s.RcloneStorage.Update(incoming.RcloneStorage)
+		} else if incoming.RcloneStorage != nil {
+			s.RcloneStorage = incoming.RcloneStorage
 		}
 	}
 }

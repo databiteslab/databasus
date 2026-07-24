@@ -1,9 +1,9 @@
 package users_services
 
 import (
-	users_dto "databasus-backend/internal/features/users/dto"
-
 	"golang.org/x/oauth2"
+
+	users_dto "databasus-backend/internal/features/users/dto"
 )
 
 func (s *UserService) HandleGitHubOAuthWithMockEndpoint(

@@ -4,10 +4,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	user_enums "databasus-backend/internal/features/users/enums"
 	user_models "databasus-backend/internal/features/users/models"
-
-	"github.com/google/uuid"
 )
 
 type AuditLogService struct {

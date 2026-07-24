@@ -2,7 +2,7 @@ package slack_notifier
 
 import (
 	"bytes"
-	"databasus-backend/internal/util/encryption"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	notifier_models "databasus-backend/internal/features/notifiers/models"
+	"databasus-backend/internal/util/encryption"
 )
 
 type SlackNotifier struct {
@@ -47,17 +50,17 @@ func (s *SlackNotifier) Validate(encryptor encryption.FieldEncryptor) error {
 func (s *SlackNotifier) Send(
 	encryptor encryption.FieldEncryptor,
 	logger *slog.Logger,
-	heading, message string,
+	notification notifier_models.Notification,
 ) error {
-	botToken, err := encryptor.Decrypt(s.NotifierID, s.BotToken)
+	botToken, err := encryptor.Decrypt(s.BotToken)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt bot token: %w", err)
 	}
 
-	full := fmt.Sprintf("*%s*", heading)
+	full := fmt.Sprintf("*%s*", notification.Heading)
 
-	if message != "" {
-		full = fmt.Sprintf("%s\n\n%s", full, message)
+	if notification.Message != "" {
+		full = fmt.Sprintf("%s\n\n%s", full, notification.Message)
 	}
 
 	payload, _ := json.Marshal(map[string]any{
@@ -85,7 +88,8 @@ func (s *SlackNotifier) Send(
 	for {
 		attempts++
 
-		req, err := http.NewRequest(
+		req, err := http.NewRequestWithContext(
+			context.Background(),
 			"POST",
 			"https://slack.com/api/chat.postMessage",
 			bytes.NewReader(payload),
@@ -135,7 +139,7 @@ func (s *SlackNotifier) Send(
 
 		if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
 			raw, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("decode response: %v – raw: %s", err, raw)
+			return fmt.Errorf("decode response: %w – raw: %s", err, raw)
 		}
 
 		if !respBody.OK {
@@ -162,7 +166,7 @@ func (s *SlackNotifier) Update(incoming *SlackNotifier) {
 
 func (s *SlackNotifier) EncryptSensitiveData(encryptor encryption.FieldEncryptor) error {
 	if s.BotToken != "" {
-		encrypted, err := encryptor.Encrypt(s.NotifierID, s.BotToken)
+		encrypted, err := encryptor.Encrypt(s.BotToken)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt bot token: %w", err)
 		}

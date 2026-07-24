@@ -1,16 +1,22 @@
 package config
 
 import (
-	env_utils "databasus-backend/internal/util/env"
-	"databasus-backend/internal/util/logger"
-	"databasus-backend/internal/util/tools"
+	"context"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
+
+	env_utils "databasus-backend/internal/util/env"
+	"databasus-backend/internal/util/logger"
+	"databasus-backend/internal/util/tools"
 )
 
 var log = logger.GetLogger()
@@ -20,83 +26,67 @@ const (
 	AppModeBackground = "background"
 )
 
+const (
+	// defaultTestParallelWorkers is the number of parallel test workers, used
+	// when TEST_PARALLEL_WORKERS is unset. Each worker gets its own metadata DB
+	// and Valkey logical DB, so this must stay <= 16 (Valkey's default logical DB
+	// count) and equal to the `go test -p` value.
+	defaultTestParallelWorkers = 8
+
+	// testSlotAdvisoryLockBase is the first pg_advisory_lock key reserved for
+	// test-worker slot claims; slot N uses base+N.
+	testSlotAdvisoryLockBase = 945_000_000
+
+	// testSlotClaimTimeout bounds the wait for a free slot, absorbing the brief
+	// window where `go test -p` starts the next package before the previous
+	// process has exited and released its advisory lock.
+	testSlotClaimTimeout = 60 * time.Second
+)
+
 type EnvVariables struct {
-	IsTesting            bool
-	EnvMode              env_utils.EnvMode `env:"ENV_MODE"             required:"true"`
-	PostgresesInstallDir string            `env:"POSTGRES_INSTALL_DIR"`
-	MysqlInstallDir      string            `env:"MYSQL_INSTALL_DIR"`
-	MariadbInstallDir    string            `env:"MARIADB_INSTALL_DIR"`
-	MongodbInstallDir    string            `env:"MONGODB_INSTALL_DIR"`
+	IsTesting bool
+	EnvMode   env_utils.EnvMode `env:"ENV_MODE" required:"true"`
 
 	// Internal database
-	DatabaseDsn string `env:"DATABASE_DSN"    required:"true"`
+	DatabaseDsn         string `env:"DATABASE_DSN"          required:"true"`
+	TestDatabaseDsn     string `env:"TEST_DATABASE_DSN"`
+	TestParallelWorkers int    `env:"TEST_PARALLEL_WORKERS"`
 	// Internal Valkey
 	ValkeyHost     string `env:"VALKEY_HOST"     required:"true"`
 	ValkeyPort     string `env:"VALKEY_PORT"     required:"true"`
-	ValkeyUsername string `env:"VALKEY_USERNAME" required:"true"`
-	ValkeyPassword string `env:"VALKEY_PASSWORD" required:"true"`
+	ValkeyUsername string `env:"VALKEY_USERNAME"`
+	ValkeyPassword string `env:"VALKEY_PASSWORD"`
 	ValkeyIsSsl    bool   `env:"VALKEY_IS_SSL"   required:"true"`
 
-	IsCloud       bool   `env:"IS_CLOUD"`
+	// Per-worker test isolation (computed, only set under `go test`): each test
+	// binary claims a slot 0..TestParallelWorkers-1 that selects its own metadata DB
+	// (DatabaseDsn is rewritten to dbname=<base>_w{slot}), its own Valkey logical
+	// DB (ValkeySelectDB), and a cache-key namespace ("w{slot}:"). All zero/empty in
+	// production.
+	ValkeySelectDB int
+	CacheNamespace string
+
 	TestLocalhost string `env:"TEST_LOCALHOST"`
 
 	ShowDbInstallationVerificationLogs bool `env:"SHOW_DB_INSTALLATION_VERIFICATION_LOGS"`
-	IsSkipExternalResourcesTests       bool `env:"IS_SKIP_EXTERNAL_RESOURCES_TESTS"`
 
-	IsManyNodesMode          bool `env:"IS_MANY_NODES_MODE"`
-	IsPrimaryNode            bool `env:"IS_PRIMARY_NODE"`
-	IsProcessingNode         bool `env:"IS_PROCESSING_NODE"`
-	NodeNetworkThroughputMBs int  `env:"NODE_NETWORK_THROUGHPUT_MBPS"`
+	DataFolder            string
+	TempFolder            string
+	SecretKeyPath         string
+	TelemetryInstancePath string
 
-	DataFolder    string
-	TempFolder    string
-	SecretKeyPath string
+	IsDisableAnonymousTelemetry bool `env:"IS_DISABLE_ANONYMOUS_TELEMETRY"`
 
-	TestGoogleDriveClientID     string `env:"TEST_GOOGLE_DRIVE_CLIENT_ID"`
-	TestGoogleDriveClientSecret string `env:"TEST_GOOGLE_DRIVE_CLIENT_SECRET"`
-	TestGoogleDriveTokenJSON    string `env:"TEST_GOOGLE_DRIVE_TOKEN_JSON"`
+	// TestLogicalPostgres16Port is the shared always-on logical-Postgres fixture used by
+	// GetTestPostgresConfig / CreateTestDatabase across the test suite. The per-version PG
+	// logical tests (14-18 + SSL + mTLS) run on testcontainers and need no fixed port.
+	TestLogicalPostgres16Port string `env:"TEST_LOGICAL_POSTGRES_16_PORT"`
 
-	TestPostgres12Port string `env:"TEST_POSTGRES_12_PORT"`
-	TestPostgres13Port string `env:"TEST_POSTGRES_13_PORT"`
-	TestPostgres14Port string `env:"TEST_POSTGRES_14_PORT"`
-	TestPostgres15Port string `env:"TEST_POSTGRES_15_PORT"`
-	TestPostgres16Port string `env:"TEST_POSTGRES_16_PORT"`
-	TestPostgres17Port string `env:"TEST_POSTGRES_17_PORT"`
-	TestPostgres18Port string `env:"TEST_POSTGRES_18_PORT"`
-
-	TestMinioPort        string `env:"TEST_MINIO_PORT"`
-	TestMinioConsolePort string `env:"TEST_MINIO_CONSOLE_PORT"`
-
-	TestAzuriteBlobPort string `env:"TEST_AZURITE_BLOB_PORT"`
-
-	TestNASPort  string `env:"TEST_NAS_PORT"`
-	TestFTPPort  string `env:"TEST_FTP_PORT"`
-	TestSFTPPort string `env:"TEST_SFTP_PORT"`
-
-	TestMysql57Port string `env:"TEST_MYSQL_57_PORT"`
-	TestMysql80Port string `env:"TEST_MYSQL_80_PORT"`
-	TestMysql84Port string `env:"TEST_MYSQL_84_PORT"`
-	TestMysql90Port string `env:"TEST_MYSQL_90_PORT"`
-
-	TestMariadb55Port   string `env:"TEST_MARIADB_55_PORT"`
-	TestMariadb101Port  string `env:"TEST_MARIADB_101_PORT"`
-	TestMariadb102Port  string `env:"TEST_MARIADB_102_PORT"`
-	TestMariadb103Port  string `env:"TEST_MARIADB_103_PORT"`
-	TestMariadb104Port  string `env:"TEST_MARIADB_104_PORT"`
-	TestMariadb105Port  string `env:"TEST_MARIADB_105_PORT"`
-	TestMariadb106Port  string `env:"TEST_MARIADB_106_PORT"`
-	TestMariadb1011Port string `env:"TEST_MARIADB_1011_PORT"`
-	TestMariadb114Port  string `env:"TEST_MARIADB_114_PORT"`
-	TestMariadb118Port  string `env:"TEST_MARIADB_118_PORT"`
-	TestMariadb120Port  string `env:"TEST_MARIADB_120_PORT"`
-
-	TestMongodb40Port string `env:"TEST_MONGODB_40_PORT"`
-	TestMongodb42Port string `env:"TEST_MONGODB_42_PORT"`
-	TestMongodb44Port string `env:"TEST_MONGODB_44_PORT"`
-	TestMongodb50Port string `env:"TEST_MONGODB_50_PORT"`
-	TestMongodb60Port string `env:"TEST_MONGODB_60_PORT"`
-	TestMongodb70Port string `env:"TEST_MONGODB_70_PORT"`
-	TestMongodb82Port string `env:"TEST_MONGODB_82_PORT"`
+	// The physical primary sources are the shared always-on fixture (like the logical PG-16
+	// fixture); the per-version, no-summary, tablespace, mTLS and restore-target containers all run
+	// on testcontainers and need no fixed port.
+	TestPhysicalPostgres17Port string `env:"TEST_PHYSICAL_POSTGRES_17_PORT"`
+	TestPhysicalPostgres18Port string `env:"TEST_PHYSICAL_POSTGRES_18_PORT"`
 
 	// oauth
 	GitHubClientID     string `env:"GITHUB_CLIENT_ID"`
@@ -108,23 +98,13 @@ type EnvVariables struct {
 	CloudflareTurnstileSecretKey string `env:"CLOUDFLARE_TURNSTILE_SECRET_KEY"`
 	CloudflareTurnstileSiteKey   string `env:"CLOUDFLARE_TURNSTILE_SITE_KEY"`
 
-	// testing Telegram
-	TestTelegramBotToken string `env:"TEST_TELEGRAM_BOT_TOKEN"`
-	TestTelegramChatID   string `env:"TEST_TELEGRAM_CHAT_ID"`
-
-	// testing Supabase
-	TestSupabaseHost     string `env:"TEST_SUPABASE_HOST"`
-	TestSupabasePort     string `env:"TEST_SUPABASE_PORT"`
-	TestSupabaseUsername string `env:"TEST_SUPABASE_USERNAME"`
-	TestSupabasePassword string `env:"TEST_SUPABASE_PASSWORD"`
-	TestSupabaseDatabase string `env:"TEST_SUPABASE_DATABASE"`
-
 	// SMTP configuration (optional)
-	SMTPHost     string `env:"SMTP_HOST"`
-	SMTPPort     int    `env:"SMTP_PORT"`
-	SMTPUser     string `env:"SMTP_USER"`
-	SMTPPassword string `env:"SMTP_PASSWORD"`
-	SMTPFrom     string `env:"SMTP_FROM"`
+	SMTPHost               string `env:"SMTP_HOST"`
+	SMTPPort               int    `env:"SMTP_PORT"`
+	SMTPUser               string `env:"SMTP_USER"`
+	SMTPPassword           string `env:"SMTP_PASSWORD"`
+	SMTPFrom               string `env:"SMTP_FROM"`
+	SMTPInsecureSkipVerify bool   `env:"SMTP_INSECURE_SKIP_VERIFY"`
 
 	// Application URL (optional) - used for email links
 	DatabasusURL string `env:"DATABASUS_URL"`
@@ -161,18 +141,16 @@ type EnvVariables struct {
 	BackupPgDumpMaxDurationHours int `env:"BACKUP_PG_DUMP_MAX_DURATION_HOURS"`
 }
 
-var (
-	env  EnvVariables
-	once sync.Once
-)
+var env EnvVariables
 
-func GetEnv() EnvVariables {
-	once.Do(loadEnvVariables)
-	return env
+var initEnv = sync.OnceFunc(loadEnvVariables)
+
+func GetEnv() *EnvVariables {
+	initEnv()
+	return &env
 }
 
 func loadEnvVariables() {
-	// Get current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
 		log.Warn("could not get current working directory", "error", err)
@@ -193,25 +171,18 @@ func loadEnvVariables() {
 		backendRoot = parent
 	}
 
-	envPaths := []string{
-		filepath.Join(cwd, ".env"),
-		filepath.Join(backendRoot, ".env"),
-	}
+	envPath := filepath.Join(filepath.Dir(backendRoot), ".env")
 
-	var loaded bool
-	for _, path := range envPaths {
-		log.Info("Trying to load .env", "path", path)
-		if err := godotenv.Load(path); err == nil {
-			log.Info("Successfully loaded .env", "path", path)
-			loaded = true
-			break
-		}
-	}
-
-	if !loaded {
-		log.Error("Error loading .env file: could not find .env in any location")
+	log.Info("Trying to load .env", "path", envPath)
+	if err := godotenv.Load(envPath); err != nil {
+		log.Error("Error loading .env file from repo root", "path", envPath, "error", err)
 		os.Exit(1)
 	}
+	log.Info("Successfully loaded .env", "path", envPath)
+
+	// Empty values for non-string fields (e.g. SMTP_PORT=) crash cleanenv's
+	// strconv parsing. Drop them so cleanenv falls back to the Go zero value.
+	unsetEmptyEnvVars()
 
 	err = cleanenv.ReadEnv(&env)
 	if err != nil {
@@ -219,19 +190,14 @@ func loadEnvVariables() {
 		os.Exit(1)
 	}
 
+	if env.SMTPHost != "" && env.SMTPPort <= 0 {
+		log.Error("SMTP_PORT must be a positive integer when SMTP_HOST is set", "value", env.SMTPPort)
+		os.Exit(1)
+	}
+
 	// Set default value for ShowDbInstallationVerificationLogs if not defined
 	if os.Getenv("SHOW_DB_INSTALLATION_VERIFICATION_LOGS") == "" {
 		env.ShowDbInstallationVerificationLogs = true
-	}
-
-	// Set default value for IsSkipExternalTests if not defined
-	if os.Getenv("IS_SKIP_EXTERNAL_RESOURCES_TESTS") == "" {
-		env.IsSkipExternalResourcesTests = false
-	}
-
-	// Set default value for IsCloud if not defined
-	if os.Getenv("IS_CLOUD") == "" {
-		env.IsCloud = false
 	}
 
 	for _, arg := range os.Args {
@@ -241,12 +207,24 @@ func loadEnvVariables() {
 		}
 	}
 
-	// Check for external database override
-	if externalDsn := os.Getenv("DANGEROUS_EXTERNAL_DATABASE_DSN"); externalDsn != "" {
-		log.Warn(
-			"Using DANGEROUS_EXTERNAL_DATABASE_DSN - connecting to external database instead of internal PostgreSQL",
-		)
-		env.DatabaseDsn = externalDsn
+	if env.IsTesting {
+		if env.TestDatabaseDsn == "" {
+			log.Error("TEST_DATABASE_DSN is empty")
+			os.Exit(1)
+		}
+
+		env.DatabaseDsn = env.TestDatabaseDsn
+
+		if env.TestParallelWorkers <= 0 {
+			env.TestParallelWorkers = defaultTestParallelWorkers
+		}
+
+		// Only a real `go test` binary claims a per-worker slot; the cleanup_test_db
+		// command and any other tool run with IsTesting=true must operate on all
+		// slots, so they keep the base test DSN and default Valkey DB.
+		if strings.Contains(os.Args[0], ".test") {
+			applyTestWorkerSlot()
+		}
 	}
 
 	if env.DatabaseDsn == "" {
@@ -264,46 +242,7 @@ func loadEnvVariables() {
 	}
 	log.Info("ENV_MODE loaded", "mode", env.EnvMode)
 
-	env.PostgresesInstallDir = filepath.Join(backendRoot, "tools", "postgresql")
-	tools.VerifyPostgresesInstallation(
-		log,
-		env.EnvMode,
-		env.PostgresesInstallDir,
-		env.ShowDbInstallationVerificationLogs,
-	)
-
-	env.MysqlInstallDir = filepath.Join(backendRoot, "tools", "mysql")
-	tools.VerifyMysqlInstallation(
-		log,
-		env.EnvMode,
-		env.MysqlInstallDir,
-		env.ShowDbInstallationVerificationLogs,
-	)
-
-	env.MariadbInstallDir = filepath.Join(backendRoot, "tools", "mariadb")
-	tools.VerifyMariadbInstallation(
-		log,
-		env.EnvMode,
-		env.MariadbInstallDir,
-		env.ShowDbInstallationVerificationLogs,
-	)
-
-	env.MongodbInstallDir = filepath.Join(backendRoot, "tools", "mongodb")
-	tools.VerifyMongodbInstallation(
-		log,
-		env.EnvMode,
-		env.MongodbInstallDir,
-		env.ShowDbInstallationVerificationLogs,
-	)
-
-	if env.NodeNetworkThroughputMBs == 0 {
-		env.NodeNetworkThroughputMBs = 125 // 1 Gbit/s
-	}
-
-	if !env.IsManyNodesMode {
-		env.IsPrimaryNode = true
-		env.IsProcessingNode = true
-	}
+	tools.LogAndExitIfClientToolsBroken(log, env.ShowDbInstallationVerificationLogs)
 
 	if env.TestLocalhost == "" {
 		env.TestLocalhost = "localhost"
@@ -348,92 +287,167 @@ func loadEnvVariables() {
 		os.Exit(1)
 	}
 
-	// Check for external Valkey override
-	if externalValkeyHost := os.Getenv("DANGEROUS_VALKEY_HOST"); externalValkeyHost != "" {
-		log.Warn(
-			"Using DANGEROUS_VALKEY_* variables - connecting to external Valkey instead of internal instance",
-		)
-		env.ValkeyHost = externalValkeyHost
-
-		if externalValkeyPort := os.Getenv("DANGEROUS_VALKEY_PORT"); externalValkeyPort != "" {
-			env.ValkeyPort = externalValkeyPort
-		}
-		if externalValkeyUsername := os.Getenv("DANGEROUS_VALKEY_USERNAME"); externalValkeyUsername != "" {
-			env.ValkeyUsername = externalValkeyUsername
-		}
-		if externalValkeyPassword := os.Getenv("DANGEROUS_VALKEY_PASSWORD"); externalValkeyPassword != "" {
-			env.ValkeyPassword = externalValkeyPassword
-		}
-		if externalValkeyIsSsl := os.Getenv("DANGEROUS_VALKEY_IS_SSL"); externalValkeyIsSsl != "" {
-			env.ValkeyIsSsl = externalValkeyIsSsl == "true"
-		}
-	}
-
 	// Store the data and temp folders one level below the root
 	// (projectRoot/databasus-data -> /databasus-data)
 	env.DataFolder = filepath.Join(filepath.Dir(backendRoot), "databasus-data", "backups")
 	env.TempFolder = filepath.Join(filepath.Dir(backendRoot), "databasus-data", "temp")
 	env.SecretKeyPath = filepath.Join(filepath.Dir(backendRoot), "databasus-data", "secret.key")
+	env.TelemetryInstancePath = filepath.Join(
+		filepath.Dir(backendRoot), "databasus-data", "instance.json",
+	)
 
 	if env.IsTesting {
-		if env.TestPostgres12Port == "" {
-			log.Error("TEST_POSTGRES_12_PORT is empty")
+		if env.TestLogicalPostgres16Port == "" {
+			log.Error("TEST_LOGICAL_POSTGRES_16_PORT is empty")
 			os.Exit(1)
 		}
-		if env.TestPostgres13Port == "" {
-			log.Error("TEST_POSTGRES_13_PORT is empty")
+		if env.TestPhysicalPostgres17Port == "" {
+			log.Error("TEST_PHYSICAL_POSTGRES_17_PORT is empty")
 			os.Exit(1)
 		}
-		if env.TestPostgres14Port == "" {
-			log.Error("TEST_POSTGRES_14_PORT is empty")
-			os.Exit(1)
-		}
-		if env.TestPostgres15Port == "" {
-			log.Error("TEST_POSTGRES_15_PORT is empty")
-			os.Exit(1)
-		}
-		if env.TestPostgres16Port == "" {
-			log.Error("TEST_POSTGRES_16_PORT is empty")
-			os.Exit(1)
-		}
-		if env.TestPostgres17Port == "" {
-			log.Error("TEST_POSTGRES_17_PORT is empty")
-			os.Exit(1)
-		}
-		if env.TestPostgres18Port == "" {
-			log.Error("TEST_POSTGRES_18_PORT is empty")
-			os.Exit(1)
-		}
-
-		if env.TestMinioPort == "" {
-			log.Error("TEST_MINIO_PORT is empty")
-			os.Exit(1)
-		}
-		if env.TestMinioConsolePort == "" {
-			log.Error("TEST_MINIO_CONSOLE_PORT is empty")
-			os.Exit(1)
-		}
-
-		if env.TestAzuriteBlobPort == "" {
-			log.Error("TEST_AZURITE_BLOB_PORT is empty")
-			os.Exit(1)
-		}
-
-		if env.TestNASPort == "" {
-			log.Error("TEST_NAS_PORT is empty")
-			os.Exit(1)
-		}
-
-		if env.TestTelegramBotToken == "" {
-			log.Error("TEST_TELEGRAM_BOT_TOKEN is empty")
-			os.Exit(1)
-		}
-
-		if env.TestTelegramChatID == "" {
-			log.Error("TEST_TELEGRAM_CHAT_ID is empty")
+		if env.TestPhysicalPostgres18Port == "" {
+			log.Error("TEST_PHYSICAL_POSTGRES_18_PORT is empty")
 			os.Exit(1)
 		}
 	}
 
 	log.Info("Environment variables loaded successfully!")
+}
+
+func unsetEmptyEnvVars() {
+	for _, kv := range os.Environ() {
+		key, value, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+
+		if value == "" {
+			_ = os.Unsetenv(key)
+		}
+	}
+}
+
+// slotLockConn holds the system-DB connection whose session owns this worker's
+// advisory lock. It must live for the whole process: closing it (or letting it
+// be garbage-collected) releases the lock and frees the slot for another worker
+// mid-run. It is assigned-only by design — the reference itself is the point, so
+// it anchors the connection lifetime as a GC root.
+//
+//nolint:unused // assigned-only: keeps the advisory-lock connection alive for the process lifetime
+var slotLockConn *sql.Conn
+
+// applyTestWorkerSlot claims a free slot for this test binary and rewrites the
+// env so the worker runs fully isolated: its own metadata DB, Valkey logical DB,
+// and registry namespace.
+func applyTestWorkerSlot() {
+	baseDbName, _, err := RewriteDbName(env.TestDatabaseDsn, systemDbName)
+	if err != nil {
+		log.Error("could not parse TEST_DATABASE_DSN for slot isolation", "error", err)
+		os.Exit(1)
+	}
+
+	slot := claimTestWorkerSlot(env.TestDatabaseDsn, env.TestParallelWorkers)
+
+	slotDbName := fmt.Sprintf("%s_w%d", baseDbName, slot)
+	_, slotDsn, err := RewriteDbName(env.TestDatabaseDsn, slotDbName)
+	if err != nil {
+		log.Error("could not build per-slot DSN", "error", err)
+		os.Exit(1)
+	}
+
+	env.DatabaseDsn = slotDsn
+	env.ValkeySelectDB = slot
+	env.CacheNamespace = fmt.Sprintf("w%d:", slot)
+
+	log.Info("claimed test worker slot", "slot", slot, "db", slotDbName)
+}
+
+// systemDbName is the always-present database used for slot coordination and as
+// the connection target when (re)creating per-slot databases.
+const systemDbName = "postgres"
+
+// claimTestWorkerSlot acquires a session-level advisory lock for the first free
+// slot in [0,pool) on the system Postgres DB and returns it. The lock is held by
+// slotLockConn until the process exits. It retries until testSlotClaimTimeout to
+// absorb the handoff window where `go test -p` overlaps a finishing worker.
+func claimTestWorkerSlot(testDsn string, pool int) int {
+	_, systemDsn, err := RewriteDbName(testDsn, systemDbName)
+	if err != nil {
+		log.Error("could not build system DSN for slot claim", "error", err)
+		os.Exit(1)
+	}
+
+	db, err := sql.Open("pgx", systemDsn)
+	if err != nil {
+		log.Error("could not open system DB for slot claim", "error", err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		log.Error("could not get system DB connection for slot claim", "error", err)
+		os.Exit(1)
+	}
+
+	deadline := time.Now().Add(testSlotClaimTimeout)
+	for {
+		for slot := range pool {
+			var locked bool
+			lockErr := conn.QueryRowContext(
+				ctx,
+				"SELECT pg_try_advisory_lock($1)",
+				testSlotAdvisoryLockBase+int64(slot),
+			).Scan(&locked)
+			if lockErr != nil {
+				log.Error("advisory lock query failed during slot claim", "error", lockErr)
+				os.Exit(1)
+			}
+
+			if locked {
+				slotLockConn = conn
+				return slot
+			}
+		}
+
+		if time.Now().After(deadline) {
+			log.Error(
+				"no free test DB slot",
+				"pool", pool,
+				"hint", "TEST_PARALLEL_WORKERS must be >= the `go test -p` value",
+			)
+			os.Exit(1)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// RewriteDbName replaces the dbname= token in a keyword/value Postgres DSN,
+// returning the original dbname and the rewritten DSN. Used both to derive the
+// system DSN and to build per-slot test DSNs.
+func RewriteDbName(dsn, newDbName string) (origDbName, rewritten string, err error) {
+	parts := strings.Fields(dsn)
+	out := make([]string, 0, len(parts))
+
+	for _, p := range parts {
+		k, v, ok := strings.Cut(p, "=")
+		if !ok {
+			return "", "", fmt.Errorf("invalid DSN token: %q", p)
+		}
+
+		if k == "dbname" {
+			origDbName = v
+			out = append(out, "dbname="+newDbName)
+			continue
+		}
+
+		out = append(out, p)
+	}
+
+	if origDbName == "" {
+		return "", "", fmt.Errorf("DSN missing dbname: %q", dsn)
+	}
+
+	return origDbName, strings.Join(out, " "), nil
 }

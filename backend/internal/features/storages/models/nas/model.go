@@ -3,7 +3,6 @@ package nas_storage
 import (
 	"context"
 	"crypto/tls"
-	"databasus-backend/internal/util/encryption"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hirochachacha/go-smb2"
+
+	"databasus-backend/internal/util/encryption"
 )
 
 const (
@@ -283,7 +284,7 @@ func (n *NASStorage) HideSensitiveData() {
 
 func (n *NASStorage) EncryptSensitiveData(encryptor encryption.FieldEncryptor) error {
 	if n.Password != "" {
-		encrypted, err := encryptor.Encrypt(n.StorageID, n.Password)
+		encrypted, err := encryptor.Encrypt(n.Password)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt NAS password: %w", err)
 		}
@@ -320,7 +321,7 @@ func (n *NASStorage) createSessionWithContext(
 		return nil, err
 	}
 
-	password, err := encryptor.Decrypt(n.StorageID, n.Password)
+	password, err := encryptor.Decrypt(n.Password)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("failed to decrypt NAS password: %w", err)
@@ -355,7 +356,7 @@ func (n *NASStorage) createConnectionWithContext(ctx context.Context) (net.Conn,
 			ServerName:         n.Host,
 			InsecureSkipVerify: false,
 		}
-		conn, err := tls.DialWithDialer(dialer, "tcp", address, tlsConfig)
+		conn, err := (&tls.Dialer{NetDialer: dialer, Config: tlsConfig}).DialContext(ctx, "tcp", address)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SSL connection to %s: %w", address, err)
 		}
@@ -399,7 +400,7 @@ func (n *NASStorage) ensureDirectory(fs *smb2.Share, path string) error {
 		_, err := fs.Stat(currentPath)
 		if err != nil {
 			// Directory doesn't exist, try to create it
-			err = fs.Mkdir(currentPath, 0755)
+			err = fs.Mkdir(currentPath, 0o755)
 			if err != nil {
 				return fmt.Errorf("failed to create directory '%s': %w", currentPath, err)
 			}

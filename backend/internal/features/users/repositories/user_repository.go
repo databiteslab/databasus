@@ -1,14 +1,16 @@
 package users_repositories
 
 import (
-	users_enums "databasus-backend/internal/features/users/enums"
-	users_models "databasus-backend/internal/features/users/models"
-	"databasus-backend/internal/storage"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+
+	users_enums "databasus-backend/internal/features/users/enums"
+	users_models "databasus-backend/internal/features/users/models"
+	"databasus-backend/internal/storage"
 )
 
 type UserRepository struct{}
@@ -30,7 +32,7 @@ func (r *UserRepository) GetUserByEmail(email string) (*users_models.User, error
 	var user users_models.User
 
 	if err := storage.GetDb().Where("email = ?", email).First(&user).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 
@@ -156,7 +158,7 @@ func (r *UserRepository) RenameUserEmailForTests(oldEmail, newEmail string) erro
 	return nil
 }
 
-func (r *UserRepository) UpdateUserInfo(userID uuid.UUID, name *string, email *string) error {
+func (r *UserRepository) UpdateUserInfo(userID uuid.UUID, name, email *string) error {
 	updates := make(map[string]any)
 
 	if name != nil {
@@ -178,7 +180,7 @@ func (r *UserRepository) UpdateUserInfo(userID uuid.UUID, name *string, email *s
 func (r *UserRepository) GetUserByGitHubOAuthID(githubID string) (*users_models.User, error) {
 	var user users_models.User
 	err := storage.GetDb().Where("github_oauth_id = ?", githubID).First(&user).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -190,7 +192,7 @@ func (r *UserRepository) GetUserByGitHubOAuthID(githubID string) (*users_models.
 func (r *UserRepository) GetUserByGoogleOAuthID(googleID string) (*users_models.User, error) {
 	var user users_models.User
 	err := storage.GetDb().Where("google_oauth_id = ?", googleID).First(&user).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
 	if err != nil {

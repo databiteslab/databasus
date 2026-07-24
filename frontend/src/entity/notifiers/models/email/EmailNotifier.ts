@@ -5,4 +5,5 @@ export interface EmailNotifier {
   smtpUser: string;
   smtpPassword: string;
   from: string;
+  isInsecureSkipVerify: boolean;
 }

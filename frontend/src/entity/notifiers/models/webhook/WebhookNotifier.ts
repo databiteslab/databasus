@@ -1,3 +1,4 @@
+import type { NotificationType } from '../NotificationType';
 import type { WebhookHeader } from './WebhookHeader';
 import type { WebhookMethod } from './WebhookMethod';
 
@@ -6,4 +7,5 @@ export interface WebhookNotifier {
   webhookMethod: WebhookMethod;
   bodyTemplate?: string;
   headers?: WebhookHeader[];
+  acceptNotificationTypes?: NotificationType[];
 }

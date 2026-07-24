@@ -4,7 +4,11 @@ import { type JSX, useState } from 'react';
 
 import { useCloudflareTurnstile } from '../../../shared/hooks/useCloudflareTurnstile';
 
-import { GITHUB_CLIENT_ID, GOOGLE_CLIENT_ID } from '../../../constants';
+import {
+  CLOUDFLARE_TURNSTILE_SITE_KEY,
+  GITHUB_CLIENT_ID,
+  GOOGLE_CLIENT_ID,
+} from '../../../constants';
 import { userApi } from '../../../entity/users';
 import { StringUtils } from '../../../shared/lib';
 import { FormValidator } from '../../../shared/lib/FormValidator';
@@ -182,7 +186,7 @@ export function SignUpComponent({ onSwitchToSignIn }: SignUpComponentProps): JSX
       <CloudflareTurnstileWidget containerRef={containerRef} />
 
       <Button
-        disabled={isLoading}
+        disabled={isLoading || (!!CLOUDFLARE_TURNSTILE_SITE_KEY && !token)}
         loading={isLoading}
         className="w-full"
         onClick={() => {
@@ -211,6 +215,8 @@ export function SignUpComponent({ onSwitchToSignIn }: SignUpComponentProps): JSX
           </button>
         </div>
       )}
+
+      <div className="mb-10" />
     </div>
   );
 }

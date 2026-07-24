@@ -4,11 +4,11 @@ import (
 	"testing"
 	"time"
 
-	user_enums "databasus-backend/internal/features/users/enums"
-	users_testing "databasus-backend/internal/features/users/testing"
-
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+
+	user_enums "databasus-backend/internal/features/users/enums"
+	users_testing "databasus-backend/internal/features/users/testing"
 )
 
 func Test_AuditLogs_WorkspaceSpecificLogs(t *testing.T) {

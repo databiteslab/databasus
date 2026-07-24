@@ -1,11 +1,12 @@
 package healthcheck_config
 
 import (
-	"databasus-backend/internal/storage"
 	"errors"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+
+	"databasus-backend/internal/storage"
 )
 
 type HealthcheckConfigRepository struct{}

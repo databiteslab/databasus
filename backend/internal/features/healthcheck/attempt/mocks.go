@@ -1,11 +1,12 @@
 package healthcheck_attempt
 
 import (
-	"databasus-backend/internal/features/databases"
-	"databasus-backend/internal/features/notifiers"
-
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
+
+	"databasus-backend/internal/features/databases"
+	"databasus-backend/internal/features/notifiers"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 )
 
 type MockHealthcheckAttemptSender struct {
@@ -14,10 +15,9 @@ type MockHealthcheckAttemptSender struct {
 
 func (m *MockHealthcheckAttemptSender) SendNotification(
 	notifier *notifiers.Notifier,
-	title string,
-	message string,
+	notification notifier_models.Notification,
 ) {
-	m.Called(notifier, title, message)
+	m.Called(notifier, notification)
 }
 
 type MockDatabaseService struct {

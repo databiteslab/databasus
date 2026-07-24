@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
 	user_dto "databasus-backend/internal/features/users/dto"
 	user_enums "databasus-backend/internal/features/users/enums"
 	user_middleware "databasus-backend/internal/features/users/middleware"
 	users_services "databasus-backend/internal/features/users/services"
-
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type ManagementController struct {

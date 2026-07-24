@@ -72,7 +72,7 @@ func Test_SetWithExpiration_SetsCorrectTTL(t *testing.T) {
 	assert.Equal(t, testValue, *retrieved, "Retrieved value should match")
 
 	// Check the TTL using Valkey TTL command
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultCacheTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), DefaultCacheTimeout)
 	defer cancel()
 
 	fullKey := testPrefix + testKey

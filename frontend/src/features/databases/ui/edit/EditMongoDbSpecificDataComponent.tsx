@@ -1,11 +1,12 @@
 import { CopyOutlined, DownOutlined, InfoCircleOutlined, UpOutlined } from '@ant-design/icons';
-import { App, Button, Input, InputNumber, Switch, Tooltip } from 'antd';
+import { App, Button, Input, InputNumber, Select, Switch, Tooltip } from 'antd';
 import { useEffect, useState } from 'react';
 
-import { IS_CLOUD } from '../../../../constants';
 import { type Database, databaseApi } from '../../../../entity/databases';
 import { MongodbConnectionStringParser } from '../../../../entity/databases/model/mongodb/MongodbConnectionStringParser';
+import { ClipboardHelper } from '../../../../shared/lib/ClipboardHelper';
 import { ToastHelper } from '../../../../shared/toast';
+import { ClipboardPasteModalComponent } from '../../../../shared/ui';
 
 interface Props {
   database: Database;
@@ -49,59 +50,69 @@ export const EditMongoDbSpecificDataComponent = ({
   const hasAdvancedValues =
     !!database.mongodb?.authDatabase ||
     !!database.mongodb?.isSrv ||
-    !!database.mongodb?.isDirectConnection;
+    !!database.mongodb?.isDirectConnection ||
+    !!database.mongodb?.excludeCollections?.length;
   const [isShowAdvanced, setShowAdvanced] = useState(hasAdvancedValues);
 
+  const [isShowPasteModal, setIsShowPasteModal] = useState(false);
+
+  const applyConnectionString = (text: string) => {
+    const trimmedText = text.trim();
+
+    if (!trimmedText) {
+      message.error('Clipboard is empty');
+      return;
+    }
+
+    const result = MongodbConnectionStringParser.parse(trimmedText);
+
+    if ('error' in result) {
+      message.error(result.error);
+      return;
+    }
+
+    if (!editingDatabase?.mongodb) return;
+
+    const updatedDatabase: Database = {
+      ...editingDatabase,
+      mongodb: {
+        ...editingDatabase.mongodb,
+        host: result.host,
+        port: result.port,
+        username: result.username,
+        password: result.password || '',
+        database: result.database,
+        authDatabase: result.authDatabase,
+        isHttps: result.useTls,
+        isSrv: result.isSrv,
+        isDirectConnection: result.isDirectConnection,
+        cpuCount: 1,
+      },
+    };
+
+    if (result.isSrv || result.isDirectConnection) {
+      setShowAdvanced(true);
+    }
+
+    setEditingDatabase(updatedDatabase);
+    setIsConnectionTested(false);
+
+    if (!result.password) {
+      message.warning('Connection string parsed successfully. Please enter the password manually.');
+    } else {
+      message.success('Connection string parsed successfully');
+    }
+  };
+
   const parseFromClipboard = async () => {
+    if (!ClipboardHelper.isClipboardApiAvailable()) {
+      setIsShowPasteModal(true);
+      return;
+    }
+
     try {
-      const text = await navigator.clipboard.readText();
-      const trimmedText = text.trim();
-
-      if (!trimmedText) {
-        message.error('Clipboard is empty');
-        return;
-      }
-
-      const result = MongodbConnectionStringParser.parse(trimmedText);
-
-      if ('error' in result) {
-        message.error(result.error);
-        return;
-      }
-
-      if (!editingDatabase?.mongodb) return;
-
-      const updatedDatabase: Database = {
-        ...editingDatabase,
-        mongodb: {
-          ...editingDatabase.mongodb,
-          host: result.host,
-          port: result.port,
-          username: result.username,
-          password: result.password || '',
-          database: result.database,
-          authDatabase: result.authDatabase,
-          isHttps: result.useTls,
-          isSrv: result.isSrv,
-          isDirectConnection: result.isDirectConnection,
-          cpuCount: 1,
-        },
-      };
-
-      if (result.isSrv || result.isDirectConnection) {
-        setShowAdvanced(true);
-      }
-
-      setEditingDatabase(updatedDatabase);
-      setIsConnectionTested(false);
-
-      if (!result.password) {
-        message.warning(
-          'Connection string parsed successfully. Please enter the password manually.',
-        );
-      } else {
-        message.success('Connection string parsed successfully');
-      }
+      const text = await ClipboardHelper.readFromClipboard();
+      applyConnectionString(text);
     } catch {
       message.error('Failed to read clipboard. Please check browser permissions.');
     }
@@ -220,7 +231,7 @@ export const EditMongoDbSpecificDataComponent = ({
         />
       </div>
 
-      {isLocalhostDb && !IS_CLOUD && (
+      {isLocalhostDb && (
         <div className="mb-1 flex">
           <div className="min-w-[150px]" />
           <div className="max-w-[200px] text-xs text-gray-500 dark:text-gray-400">
@@ -454,6 +465,33 @@ export const EditMongoDbSpecificDataComponent = ({
               placeholder="admin"
             />
           </div>
+
+          <div className="mb-1 flex w-full items-center">
+            <div className="min-w-[150px]">Exclude collections</div>
+            <Select
+              mode="tags"
+              value={editingDatabase.mongodb?.excludeCollections || []}
+              onChange={(values) => {
+                if (!editingDatabase.mongodb) return;
+
+                setEditingDatabase({
+                  ...editingDatabase,
+                  mongodb: { ...editingDatabase.mongodb, excludeCollections: values },
+                });
+              }}
+              size="small"
+              className="max-w-[200px] grow"
+              placeholder="No collections excluded"
+              tokenSeparators={[',']}
+            />
+
+            <Tooltip
+              className="cursor-pointer"
+              title="Collection names to exclude from the backup."
+            >
+              <InfoCircleOutlined className="ml-2" style={{ color: 'gray' }} />
+            </Tooltip>
+          </div>
         </>
       )}
 
@@ -495,12 +533,21 @@ export const EditMongoDbSpecificDataComponent = ({
         )}
       </div>
 
-      {isConnectionFailed && !IS_CLOUD && (
+      {isConnectionFailed && (
         <div className="mt-3 text-sm text-gray-500 dark:text-gray-400">
           If your database uses IP whitelist, make sure Databasus server IP is added to the allowed
           list.
         </div>
       )}
+
+      <ClipboardPasteModalComponent
+        open={isShowPasteModal}
+        onSubmit={(text) => {
+          setIsShowPasteModal(false);
+          applyConnectionString(text);
+        }}
+        onCancel={() => setIsShowPasteModal(false)}
+      />
     </div>
   );
 };

@@ -1,10 +1,10 @@
 package storages
 
 import (
-	db "databasus-backend/internal/storage"
-
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+
+	db "databasus-backend/internal/storage"
 )
 
 type StorageRepository struct{}
@@ -123,7 +123,6 @@ func (r *StorageRepository) Save(storage *Storage) (*Storage, error) {
 
 		return nil
 	})
-
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +151,16 @@ func (r *StorageRepository) FindByID(id uuid.UUID) (*Storage, error) {
 	return &s, nil
 }
 
+func (r *StorageRepository) GetAllStorages() ([]*Storage, error) {
+	var storages []*Storage
+
+	if err := db.GetDb().Find(&storages).Error; err != nil {
+		return nil, err
+	}
+
+	return storages, nil
+}
+
 func (r *StorageRepository) FindByWorkspaceID(workspaceID uuid.UUID) ([]*Storage, error) {
 	var storages []*Storage
 
@@ -165,7 +174,7 @@ func (r *StorageRepository) FindByWorkspaceID(workspaceID uuid.UUID) ([]*Storage
 		Preload("FTPStorage").
 		Preload("SFTPStorage").
 		Preload("RcloneStorage").
-		Where("workspace_id = ? OR is_system = TRUE", workspaceID).
+		Where("workspace_id = ?", workspaceID).
 		Order("name ASC").
 		Find(&storages).Error; err != nil {
 		return nil, err

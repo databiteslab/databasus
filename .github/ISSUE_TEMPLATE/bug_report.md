@@ -4,13 +4,19 @@ about: Report a bug or unexpected behavior in Databasus
 labels: bug
 ---
 
-## Databasus version
+## Databasus version (screenshot)
+
+It is displayed in the bottom left corner of the Databasus UI. Please attach screenshot, not just version text
 
 <!-- e.g. 1.4.2 -->
 
 ## Operating system and architecture
 
 <!-- e.g. Ubuntu 22.04 x64, macOS 14 ARM, Windows 11 x64 -->
+
+## Database type and version (optional, for DB-related bugs)
+
+<!-- e.g. PostgreSQL 16 in Docker, MySQL 8.0 installed on server, MariaDB 11.4 in AWS Cloud -->
 
 ## Describe the bug (please write manually, do not ask AI to summarize)
 

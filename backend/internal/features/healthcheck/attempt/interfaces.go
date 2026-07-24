@@ -1,17 +1,17 @@
 package healthcheck_attempt
 
 import (
+	"github.com/google/uuid"
+
 	"databasus-backend/internal/features/databases"
 	"databasus-backend/internal/features/notifiers"
-
-	"github.com/google/uuid"
+	notifier_models "databasus-backend/internal/features/notifiers/models"
 )
 
 type HealthcheckAttemptSender interface {
 	SendNotification(
 		notifier *notifiers.Notifier,
-		title string,
-		message string,
+		notification notifier_models.Notification,
 	)
 }
 
